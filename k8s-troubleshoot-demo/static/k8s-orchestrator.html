@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>K8s orchestrator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="/k8s-troubleshoot.css?v=5" />
+</head>
+<body>
+  <div class="orch-page">
+    <header class="orch-top">
+      <h1>K8s orchestrator</h1>
+      <p class="dim orch-lede">Each Run calls POST /execute, then polls GET /status every 1s. Open agent joins the Troubleshooter at the current snapshot.</p>
+      <a class="orch-back" href="/">Troubleshooter</a>
+    </header>
+    <div class="orch-grid" id="orchGrid"></div>
+  </div>
+  <script>
+(function () {
+  const SCENARIOS = [
+    {
+      session: "amf-crashloop",
+      title: "AMF CrashLoop",
+      prompt: "Why is open5gs-amf-0 CrashLoopBackOff in 5g-core?",
+    },
+    {
+      session: "imagepull-nginx",
+      title: "ImagePullBackOff",
+      prompt: "why is imagepull-demo failing",
+    },
+    {
+      session: "busybox-pending",
+      title: "Pending busybox",
+      prompt: "why is busybox-pod in pending state",
+    },
+    {
+      session: "payments-crashloop",
+      title: "Payments probe",
+      prompt: "Why is pod api-0 CrashLoopBackOff in payments?",
+    },
+    {
+      session: "ue-latch-calico",
+      title: "UE latch / Calico",
+      prompt: "Customer unable to latch on the network",
+    },
+  ];
+
+  const TERMINAL = { COMPLETED: true, FAILED: true };
+  const IN_FLIGHT = { ACCEPTED: true, RUNNING: true };
+
+  function hexId() {
+    const buf = new Uint8Array(4);
+    crypto.getRandomValues(buf);
+    return Array.from(buf, function (b) {
+      return b.toString(16).padStart(2, "0");
+    }).join("");
+  }
+
+  function pillClass(status) {
+    if (status === "RUNNING") return "pill live";
+    if (status === "COMPLETED") return "pill ok";
+    if (status === "FAILED") return "pill fail";
+    if (status === "ACCEPTED") return "pill wait";
+    return "pill";
+  }
+
+  function renderCard(s) {
+    const el = document.createElement("article");
+    el.className = "orch-card";
+    el.dataset.session = s.session;
+    el.dataset.status = "Idle";
+    el.innerHTML =
+      '<div class="orch-card-head">' +
+        "<h2>" + s.title + "</h2>" +
+        '<span class="pill" data-role="status">Idle</span>' +
+      "</div>" +
+      '<p class="orch-prompt" data-role="prompt"></p>' +
+      '<div class="orch-track" aria-hidden="true"><span data-role="bar"></span></div>' +
+      '<p class="dim orch-caption" data-role="caption">Idle</p>' +
+      '<div class="orch-actions">' +
+        '<button class="btn primary" type="button" data-role="run">Run</button>' +
+        '<button class="btn" type="button" data-role="open" disabled>Open agent</button>' +
+      "</div>";
+    el.querySelector("[data-role=prompt]").textContent = s.prompt;
+    return el;
+  }
+
+  function bindCard(s, el) {
+    const state = { runId: null, timer: null };
+    const statusEl = el.querySelector("[data-role=status]");
+    const barEl = el.querySelector("[data-role=bar]");
+    const captionEl = el.querySelector("[data-role=caption]");
+    const runBtn = el.querySelector("[data-role=run]");
+    const openBtn = el.querySelector("[data-role=open]");
+
+    function stopPoll() {
+      if (state.timer) {
+        clearInterval(state.timer);
+        state.timer = null;
+      }
+    }
+
+    function apply(status, progress, caption) {
+      const label = status || "Idle";
+      el.dataset.status = label;
+      statusEl.className = pillClass(label);
+      statusEl.textContent = label;
+      const pct = Math.max(0, Math.min(100, Number(progress) || 0));
+      barEl.style.width = pct + "%";
+      captionEl.textContent = caption || label;
+      runBtn.disabled = Boolean(IN_FLIGHT[label]);
+    }
+
+    function openAgent() {
+      if (!state.runId) return;
+      window.open("/?run_id=" + encodeURIComponent(state.runId));
+    }
+
+    async function pollOnce() {
+      if (!state.runId) return;
+      try {
+        const res = await fetch("/status?run_id=" + encodeURIComponent(state.runId));
+        if (!res.ok) {
+          apply("FAILED", 0, "Status " + res.status);
+          stopPoll();
+          runBtn.disabled = false;
+          return;
+        }
+        const data = await res.json();
+        apply(
+          data.current_status,
+          data.progress,
+          data.current_response || data.current_status
+        );
+        if (TERMINAL[data.current_status]) {
+          stopPoll();
+          runBtn.disabled = false;
+        }
+      } catch (err) {
+        apply("FAILED", 0, String(err));
+        stopPoll();
+        runBtn.disabled = false;
+      }
+    }
+
+    async function startRun() {
+      stopPoll();
+      const runId = "RUN-K8S-" + s.session + "-" + hexId();
+      state.runId = runId;
+      openBtn.disabled = true;
+      apply("Idle", 0, "Starting…");
+      runBtn.disabled = true;
+      try {
+        const res = await fetch("/execute", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ run_id: runId, prompt: s.prompt }),
+        });
+        if (res.status !== 202) {
+          const detail = await res.text();
+          apply("FAILED", 0, "Execute " + res.status + ": " + detail);
+          runBtn.disabled = false;
+          return;
+        }
+        openBtn.disabled = false;
+        apply("ACCEPTED", 0, "ACCEPTED");
+        await pollOnce();
+        if (!TERMINAL[el.dataset.status]) {
+          state.timer = setInterval(pollOnce, 1000);
+        }
+      } catch (err) {
+        apply("FAILED", 0, String(err));
+        runBtn.disabled = false;
+      }
+    }
+
+    runBtn.addEventListener("click", startRun);
+    openBtn.addEventListener("click", openAgent);
+  }
+
+  const grid = document.getElementById("orchGrid");
+  SCENARIOS.forEach(function (s) {
+    const el = renderCard(s);
+    bindCard(s, el);
+    grid.appendChild(el);
+  });
+})();
+  </script>
+</body>
+</html>

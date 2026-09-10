@@ -1,0 +1,1180 @@
+{
+  "version": 1,
+  "source": "Stubbed Troubleshoot Console sessions for demo-k8s-agent. Match user intent to prompts/description; replay turns end to end. No live LLM or cluster.",
+  "sessions": [
+    {
+      "id": "amf-crashloop",
+      "title": "AMF CrashLoop \u00b7 5g-core",
+      "description": "AMF pod open5gs-amf-0 in namespace 5g-core is CrashLoopBackOff because AMF_BIND_ADDR is missing from the Deployment.",
+      "prompts": [
+        "AMF pod open5gs-amf-0 in ns 5g-core is CrashLoopBackOff \u2014 find the exact cause.",
+        "Why is open5gs-amf-0 CrashLoopBackOff in 5g-core?",
+        "Check CrashLoopBackOff in 5g-core",
+        "Find the exact cause of AMF CrashLoopBackOff"
+      ],
+      "keywords": [
+        "amf",
+        "open5gs",
+        "open5gs-amf-0",
+        "5g-core",
+        "crashloop",
+        "crashloopbackoff",
+        "amf_bind_addr",
+        "bind"
+      ],
+      "intent": "AMF pod open5gs-amf-0 in ns 5g-core is CrashLoopBackOff \u2014 find the exact cause.",
+      "route": {
+        "mode": "Diagnose mode",
+        "reason": "via heuristic \u00b7 conf 0.92 \u00b7 live cluster RCA, not create/apply"
+      },
+      "history": {
+        "title": "AMF CrashLoop \u00b7 5g-core",
+        "meta": "score 0.74 \u00b7 fed (above 60%) \u00b7 prior RCA: missing AMF_BIND_ADDR"
+      },
+      "knowledge": {
+        "title": "5G-AMF-CrashLoop-SOP.md",
+        "meta": "similarity 81% \u00b7 get \u2192 describe \u2192 previous logs; check AMF_BIND_ADDR [1]"
+      },
+      "turns": [
+        {
+          "id": 0,
+          "title": "Iteration 1",
+          "time": "10:42:11",
+          "validation": "New",
+          "hypothesis": "The user reports CrashLoopBackOff on open5gs-amf-0 in namespace 5g-core. Domain SOP [1] says this is usually missing AMF_BIND_ADDR, a failing probe, or an image-pull problem \u2014 but those must be confirmed on this cluster, not assumed from memory. A past session scored 0.74 and was fed into context (missing AMF_BIND_ADDR). First probe: get the pod wide so we see READY, STATUS, RESTARTS, IP, and NODE. If the pod is Pending we reschedule; if ImagePullBackOff we inspect the image; if CrashLoopBackOff with restarts we describe Events next. Do not create or apply yet.",
+          "fromPrior": null,
+          "command": "kubectl get all -n 5g-core",
+          "stdout": "NAME                                      READY   STATUS             RESTARTS   AGE     IP            NODE       NOMINATED NODE   READINESS GATES\npod/open5gs-amf-0                         0/1     CrashLoopBackOff   4          11m     10.44.1.18    worker-2   <none>           <none>\npod/open5gs-smf-0                         1/1     Running            0          2d      10.44.1.19    worker-2   <none>           <none>\npod/open5gs-upf-0                         1/1     Running            0          2d      10.44.1.20    worker-3   <none>           <none>\npod/mongodb-0                             1/1     Running            0          2d      10.44.1.12    worker-1   <none>           <none>\n\nNAME                    TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)             AGE\nservice/open5gs-amf     ClusterIP   10.96.14.20     <none>         38412/SCTP          2d\nservice/open5gs-smf     ClusterIP   10.96.14.21     <none>         7777/TCP            2d\nservice/mongodb         ClusterIP   10.96.14.10     <none>         27017/TCP           2d\n\nNAME                          READY   UP-TO-DATE   AVAILABLE   AGE\ndeployment.apps/open5gs-amf   0/1     1            0           2d\ndeployment.apps/open5gs-smf   1/1     1            1           2d\n\nNAME                                    DESIRED   CURRENT   READY   AGE\nreplicaset.apps/open5gs-amf-7d9f4c8b5   1         1         0       2d\nreplicaset.apps/open5gs-smf-6c8a1e2d9   1         1         1       2d",
+          "analysis": "Get-all confirms a live scheduled AMF pod, not a missing object. READY 0/1 and four restarts mean the container is dying in a loop. SMF, UPF, and MongoDB are Running, so this is isolated to AMF. Image pull is unlikely because the pod has an IP and a node. SOP [1] still applies: next command is describe for Events and lastState, not apply.",
+          "takeaways": [
+            "The pod open5gs-amf-0 exists in ns 5g-core \u2014 this is not a missing-resource case.",
+            "STATUS is CrashLoopBackOff with READY 0/1 and 4 restarts, so the container is crashing repeatedly.",
+            "SMF, UPF, and MongoDB are Running \u2014 the failure is isolated to AMF.",
+            "The pod is scheduled on worker-2 with IP 10.44.1.18, so this is not Pending / unschedulable.",
+            "SOP [1] still applies: next command is describe for Events and lastState, not apply."
+          ],
+          "llm": {
+            "hypothesis": "CrashLoopBackOff \u2014 confirm phase and restart count first.",
+            "command": "kubectl get all -n 5g-core",
+            "knowledge_insights": "SOP [1] CrashLoop: get, describe, previous logs. Check AMF_BIND_ADDR."
+          }
+        },
+        {
+          "id": 1,
+          "title": "Iteration 2",
+          "time": "10:42:28",
+          "validation": "Confirmed",
+          "hypothesis": "Iteration 1 confirmed CrashLoopBackOff with four restarts on a scheduled pod. Image-pull is unlikely. The working theory is a process crash (config or probe). kubectl describe should show lastState (exit code / reason) and Events (BackOff vs FailedScheduling vs FailedProbe). If lastState is Error we read previous logs; if it is ImagePull we inspect the image; if a probe killed it we inspect liveness. Still diagnose-only.",
+          "fromPrior": "Prior get confirmed CrashLoopBackOff, 0/1 Ready, 4 restarts on worker-2.",
+          "command": "kubectl describe pod open5gs-amf-0 -n 5g-core",
+          "stdout": "Name:         open5gs-amf-0\nNamespace:    5g-core\nPriority:     0\nNode:         worker-2/10.0.12.41\nStart Time:   Wed, 09 Sep 2026 10:31:02 +0000\nLabels:       app=open5gs-amf\n              statefulset.kubernetes.io/pod-name=open5gs-amf-0\nStatus:       Running\nIP:           10.44.1.18\nContainers:\n  amf:\n    Container ID:   containerd://9f3a2c8e1b44\n    Image:          open5gs/amf:2.7.2\n    Image ID:       docker.io/open5gs/amf@sha256:aa11\n    Port:           38412/SCTP\n    Host Port:      0/SCTP\n    State:          Waiting\n      Reason:       CrashLoopBackOff\n    Last State:     Terminated\n      Reason:       Error\n      Exit Code:    1\n      Started:      Wed, 09 Sep 2026 10:41:18 +0000\n      Finished:     Wed, 09 Sep 2026 10:41:19 +0000\n    Ready:          False\n    Restart Count:  4\n    Environment:\n      AMF_MCC:  001\n      AMF_MNC:  01\n    Mounts:\n      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access (ro)\nConditions:\n  Type              Status\n  Initialized       True\n  Ready             False\n  ContainersReady   False\n  PodScheduled      True\nEvents:\n  Type     Reason     Age                   From               Message\n  ----     ------     ----                  ----               -------\n  Normal   Scheduled  11m                   default-scheduler  Successfully assigned 5g-core/open5gs-amf-0 to worker-2\n  Normal   Pulled     11m (x5 over 11m)    kubelet            Container image already present on machine\n  Normal   Created    11m (x5 over 11m)    kubelet            Created container amf\n  Normal   Started    11m (x5 over 11m)    kubelet            Started container amf\n  Warning  BackOff    23s (x18 over 10m)   kubelet            Back-off restarting failed container amf in pod open5gs-amf-0_5g-core",
+          "analysis": "Describe names a process Error (exit 1), not ImagePullBackOff. The image is already on the node. Events are Back-off restarting failed container. Environment on the pod snippet lists AMF_MCC and AMF_MNC only. Next: previous container logs for the fatal line (config vs probe).",
+          "takeaways": [
+            "Last State is Terminated / Error / exit 1 \u2014 the process crashed, it was not never-started.",
+            "Image is already present (Pulled: Container image already present on machine) \u2014 not ImagePullBackOff.",
+            "Event Warning BackOff: Back-off restarting failed container amf \u2014 kubelet is retrying a failed start.",
+            "Environment lists AMF_MCC and AMF_MNC only so far; AMF_BIND_ADDR is not shown on the pod spec snippet."
+          ],
+          "llm": {
+            "hypothesis": "Process crash (exit 1). Logs will show the missing env.",
+            "command": "kubectl logs open5gs-amf-0 -n 5g-core --previous",
+            "key_takeaways": "Terminated Error; back-off restarting failed container."
+          }
+        },
+        {
+          "id": 2,
+          "title": "Iteration 3",
+          "time": "10:42:55",
+          "validation": "Refined",
+          "hypothesis": "lastState Error (exit 1) plus BackOff Events mean the AMF binary exited immediately. SOP [1] and the fed history both point at AMF_BIND_ADDR. Previous logs will either print FATAL missing AMF_BIND_ADDR (config) or a probe/listen error. If logs are empty we inspect the probe path. Do not apply YAML until the fatal line is cited.",
+          "fromPrior": "Describe named a process Error, not ImagePull. Hypothesis refined to config vs probe.",
+          "command": "kubectl logs open5gs-amf-0 -n 5g-core --previous",
+          "stdout": "open5gs-amf 2.7.2 starting\n[app] loading nf profile AMF\n[sbi] nf_id=5f3e2a10-amf\n[ngap] waiting for bind address from env AMF_BIND_ADDR\nFATAL: AMF_BIND_ADDR is not set\nopen5gs-amf: cannot bind NGAP \u2014 missing AMF_BIND_ADDR\n[main] aborting nf startup\nexit code 1",
+          "analysis": "Logs confirm SOP [1] and history: AMF_BIND_ADDR is unset and NGAP cannot bind. Closing evidence is the Deployment env list. Next: get deploy -o yaml to show the missing key, then Report Generation with the exact remedial action. Diagnose mode still forbids apply.",
+          "takeaways": [
+            "Previous logs print FATAL: AMF_BIND_ADDR is not set \u2014 this is the crash reason.",
+            "NGAP cannot bind because the bind address env is missing \u2014 matches SOP [1].",
+            "History RCA (score 0.74, fed) cited the same missing env; cluster evidence now confirms it.",
+            "Still one kubectl left: show Deployment env so the report can name the exact object to patch."
+          ],
+          "llm": {
+            "hypothesis": "Missing AMF_BIND_ADDR in the AMF container env.",
+            "command": "kubectl get deploy open5gs-amf -n 5g-core -o yaml",
+            "key_takeaways": "FATAL: AMF_BIND_ADDR is not set."
+          }
+        },
+        {
+          "id": 3,
+          "title": "Iteration 4",
+          "time": "10:43:08",
+          "validation": "Confirmed",
+          "hypothesis": "Logs already named the missing variable. This command is closing evidence, not a new theory: the Deployment spec either omits AMF_BIND_ADDR or sets it empty. If the key is absent, Report Generation can emit Resolved plus the remedial apply. If the key is present on the Deployment but not on the pod, the issue is a stale rollout instead.",
+          "fromPrior": "Logs already named the missing variable. YAML is the closing evidence.",
+          "command": "kubectl get deploy open5gs-amf -n 5g-core -o yaml",
+          "stdout": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: open5gs-amf\n  namespace: 5g-core\n  labels:\n    app: open5gs-amf\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: open5gs-amf\n  template:\n    metadata:\n      labels:\n        app: open5gs-amf\n    spec:\n      containers:\n      - name: amf\n        image: open5gs/amf:2.7.2\n        ports:\n        - containerPort: 38412\n          protocol: SCTP\n        env:\n        - name: AMF_MCC\n          value: \"001\"\n        - name: AMF_MNC\n          value: \"01\"\n        # AMF_BIND_ADDR is not defined\n        livenessProbe:\n          tcpSocket:\n            port: 38412\n          initialDelaySeconds: 15\n          periodSeconds: 10\nstatus:\n  readyReplicas: 0\n  replicas: 1\n  unavailableReplicas: 1",
+          "analysis": "YAML has AMF_MCC and AMF_MNC only. AMF_BIND_ADDR is absent from the container spec. Exact RCA is ready. Diagnose mode stops here: Report Generation will mark Resolved and suggest setting AMF_BIND_ADDR (Creation mode + HITL).",
+          "takeaways": [
+            "Deployment open5gs-amf in ns 5g-core lists env AMF_MCC and AMF_MNC only.",
+            "AMF_BIND_ADDR is absent from the container spec \u2014 matches the FATAL log.",
+            "readyReplicas is 0 / unavailableReplicas 1 \u2014 the crash is still current.",
+            "Exact resolution: set env AMF_BIND_ADDR on the AMF container, then verify the pod is Running."
+          ],
+          "llm": {
+            "hypothesis": "Deployment missing AMF_BIND_ADDR.",
+            "command": null,
+            "key_takeaways": "env lacks AMF_BIND_ADDR.",
+            "solution": "Set AMF_BIND_ADDR on Deployment open5gs-amf."
+          }
+        }
+      ],
+      "maxRetries": 8,
+      "final": {
+        "outcome": "resolved",
+        "retriesUsed": 4,
+        "hypothesis": "AMF CrashLoop is a missing required env, not a probe or image issue.",
+        "solution": "Root cause: Deployment open5gs-amf in ns 5g-core does not set AMF_BIND_ADDR. Evidence: CrashLoopBackOff 4 restarts; lastState Error; previous logs FATAL AMF_BIND_ADDR is not set; YAML env has AMF_MCC only (SOP [1]).",
+        "remedialAction": "Set env AMF_BIND_ADDR on the AMF container of Deployment open5gs-amf, then verify the pod is Running. Apply in Creation mode with HITL.",
+        "knowledge_insights": "KB [1] CrashLoop SOP and history RCA both applied; cluster evidence confirmed them.",
+        "exhaustedMessage": "Max retries reached (8). No exact solution. Report the last hypothesis and remaining probes.",
+        "knowledgeEngine": "The retrieved excerpts from 5G-AMF-CrashLoop-SOP.md [1] (similarity 81%) describe CrashLoopBackOff on AMF as missing AMF_BIND_ADDR, a failing probe, or an image-pull problem. The prescribed path is get \u2192 describe \u2192 previous logs, then inspect Deployment env. Prior history (score 0.74, fed) named missing AMF_BIND_ADDR; this run confirmed that RCA on the live cluster rather than applying it from memory.",
+        "creationHint": "To apply this fix in Creation mode, reply in a follow-up prompt asking to create/apply the exact resources named above (or paste the YAML). I will then mutate with HITL approval and verify recovery.",
+        "lastHypothesis": "Logs already named the missing variable. This command is closing evidence, not a new theory: the Deployment spec either omits AMF_BIND_ADDR or sets it empty. If the key is absent, Report Generation can emit Resolved plus the remedial apply. If the key is present on the Deployment but not on the pod, the issue is a stale rollout instead."
+      },
+      "topology": {
+        "namespace": "5g-core",
+        "cluster": "5GC",
+        "flavor": "open5gs",
+        "focus": "amf",
+        "flavors": {
+          "open5gs": {
+            "label": "Open5GS 5GC",
+            "nodes": [
+              {
+                "id": "gnb",
+                "role": "gNB",
+                "name": "ran-gnb",
+                "kind": "External",
+                "status": "running",
+                "x": 16,
+                "y": 78
+              },
+              {
+                "id": "nrf",
+                "role": "NRF",
+                "name": "open5gs-nrf-0",
+                "kind": "Pod",
+                "status": "running",
+                "x": 210,
+                "y": 16
+              },
+              {
+                "id": "amf",
+                "role": "AMF",
+                "name": "open5gs-amf-0",
+                "kind": "Pod",
+                "status": "crashloop",
+                "x": 400,
+                "y": 16
+              },
+              {
+                "id": "smf",
+                "role": "SMF",
+                "name": "open5gs-smf-0",
+                "kind": "Pod",
+                "status": "running",
+                "x": 590,
+                "y": 16
+              },
+              {
+                "id": "ausf",
+                "role": "AUSF",
+                "name": "open5gs-ausf-0",
+                "kind": "Pod",
+                "status": "running",
+                "x": 780,
+                "y": 16
+              },
+              {
+                "id": "upf",
+                "role": "UPF",
+                "name": "open5gs-upf-0",
+                "kind": "Pod",
+                "status": "running",
+                "x": 400,
+                "y": 128
+              },
+              {
+                "id": "mongo",
+                "role": "DB",
+                "name": "mongodb-0",
+                "kind": "Pod",
+                "status": "running",
+                "x": 780,
+                "y": 128
+              }
+            ],
+            "edges": [
+              {
+                "from": "gnb",
+                "to": "amf",
+                "label": "N2"
+              },
+              {
+                "from": "gnb",
+                "to": "upf",
+                "label": "N3"
+              },
+              {
+                "from": "amf",
+                "to": "smf",
+                "label": "N11"
+              },
+              {
+                "from": "smf",
+                "to": "upf",
+                "label": "N4"
+              },
+              {
+                "from": "amf",
+                "to": "nrf",
+                "label": "Nnrf"
+              },
+              {
+                "from": "smf",
+                "to": "nrf",
+                "label": "Nnrf"
+              },
+              {
+                "from": "amf",
+                "to": "ausf",
+                "label": "N12"
+              },
+              {
+                "from": "nrf",
+                "to": "ausf",
+                "label": ""
+              },
+              {
+                "from": "amf",
+                "to": "mongo",
+                "label": ""
+              },
+              {
+                "from": "smf",
+                "to": "mongo",
+                "label": ""
+              }
+            ]
+          },
+          "oai": {
+            "label": "OAI 5GC",
+            "nodes": [
+              {
+                "id": "gnb",
+                "role": "gNB",
+                "name": "oai-gnb",
+                "kind": "External",
+                "status": "running",
+                "x": 16,
+                "y": 78
+              },
+              {
+                "id": "nrf",
+                "role": "NRF",
+                "name": "oai-nrf-0",
+                "kind": "Pod",
+                "status": "running",
+                "x": 210,
+                "y": 16
+              },
+              {
+                "id": "amf",
+                "role": "AMF",
+                "name": "oai-amf-0",
+                "kind": "Pod",
+                "status": "crashloop",
+                "x": 400,
+                "y": 16
+              },
+              {
+                "id": "smf",
+                "role": "SMF",
+                "name": "oai-smf-0",
+                "kind": "Pod",
+                "status": "running",
+                "x": 590,
+                "y": 16
+              },
+              {
+                "id": "udm",
+                "role": "UDM",
+                "name": "oai-udm-0",
+                "kind": "Pod",
+                "status": "running",
+                "x": 780,
+                "y": 16
+              },
+              {
+                "id": "upf",
+                "role": "UPF",
+                "name": "oai-upf-0",
+                "kind": "Pod",
+                "status": "running",
+                "x": 400,
+                "y": 128
+              },
+              {
+                "id": "mysql",
+                "role": "DB",
+                "name": "mysql-0",
+                "kind": "Pod",
+                "status": "running",
+                "x": 780,
+                "y": 128
+              }
+            ],
+            "edges": [
+              {
+                "from": "gnb",
+                "to": "amf",
+                "label": "N2"
+              },
+              {
+                "from": "gnb",
+                "to": "upf",
+                "label": "N3"
+              },
+              {
+                "from": "amf",
+                "to": "smf",
+                "label": "N11"
+              },
+              {
+                "from": "smf",
+                "to": "upf",
+                "label": "N4"
+              },
+              {
+                "from": "amf",
+                "to": "nrf",
+                "label": "Nnrf"
+              },
+              {
+                "from": "smf",
+                "to": "nrf",
+                "label": "Nnrf"
+              },
+              {
+                "from": "amf",
+                "to": "udm",
+                "label": "N8"
+              },
+              {
+                "from": "smf",
+                "to": "udm",
+                "label": "N10"
+              },
+              {
+                "from": "udm",
+                "to": "mysql",
+                "label": ""
+              },
+              {
+                "from": "nrf",
+                "to": "udm",
+                "label": ""
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "imagepull-nginx",
+      "title": "ImagePullBackOff \u00b7 ts / imagepull-demo",
+      "description": "imagepull-demo in namespace ts is ImagePullBackOff because the image tag is nginx:lastest (typo) instead of nginx:latest.",
+      "prompts": [
+        "check pods in ts ns",
+        "check pods in the ns ts",
+        "why is imagepull-demo failing",
+        "Check pods in current ns",
+        "Check pods in the current ns"
+      ],
+      "keywords": [
+        "imagepull",
+        "imagepullbackoff",
+        "errimagepull",
+        "nginx",
+        "lastest",
+        "imagepull-demo",
+        "image",
+        "tag",
+        "ts"
+      ],
+      "intent": "check pods in ts ns",
+      "route": {
+        "mode": "Diagnose mode",
+        "reason": "via heuristic \u00b7 conf 0.90 \u00b7 live cluster RCA, not create/apply"
+      },
+      "history": {
+        "title": "Image pull typo \u00b7 ts",
+        "meta": "score 0.68 \u00b7 fed (above 60%) \u00b7 prior RCA: nginx:lastest misspelled tag"
+      },
+      "knowledge": {
+        "title": "K8s-ImagePullBackOff-SOP.md",
+        "meta": "similarity 84% \u00b7 get pods \u2192 describe Events \u2192 inspect image field [1]"
+      },
+      "maxRetries": 8,
+      "turns": [
+        {
+          "id": 0,
+          "title": "Iteration 1",
+          "time": "20:51:36",
+          "validation": "New",
+          "hypothesis": "The user asked to check pods in namespace ts. SOP [1] says start with a wide get so we can see STATUS, RESTARTS, and READY for every object, then pick the most actionable failure. History (0.68, fed) cited a misspelled nginx tag. Confirm on this cluster: ImagePullBackOff vs CrashLoop vs Pending. Do not apply yet.",
+          "fromPrior": null,
+          "command": "kubectl get pods -n ts -o wide",
+          "stdout": "NAME                  READY   STATUS             RESTARTS   AGE    IP            NODE\nbusybox-pod           0/1     Pending             0          18m    <none>        <none>\ncrashloop-demo        0/1     CrashLoopBackOff    10         2h     10.44.2.11    worker-1\nimagepull-demo        0/1     ImagePullBackOff    0          40m    <none>        worker-2\ninit-fail             0/1     Init:Error          8          2h     10.44.2.12    worker-1\nreadiness-probe-pod   0/1     Running            0          2h     10.44.2.13    worker-1\n\nNAMESPACE   NAME                  READY   STATUS             RESTARTS   AGE\nts          busybox-pod           0/1     Pending             0          18m\nts          crashloop-demo        0/1     CrashLoopBackOff    10         2h\nts          imagepull-demo        0/1     ImagePullBackOff    0          40m\nts          init-fail             0/1     Init:Error          8          2h\nts          readiness-probe-pod   0/1     Running            0          2h",
+          "analysis": "Namespace ts has several failures. ImagePullBackOff on imagepull-demo is the most actionable (history already named a tag typo). CrashLoop and Pending are separate incidents. Next: describe imagepull-demo for Failed to pull image Events.",
+          "takeaways": [
+            "imagepull-demo is ImagePullBackOff in ns ts \u2014 this is a pull failure, not a crash.",
+            "busybox-pod is Pending with no IP \u2014 a scheduling issue, not this RCA.",
+            "crashloop-demo has 10 restarts \u2014 a different incident; do not mix RCAs.",
+            "SOP [1]: describe Events next to name the image that failed to pull."
+          ],
+          "llm": {
+            "hypothesis": "ImagePullBackOff is the most actionable object in ns ts.",
+            "command": "kubectl get pods -n ts -o wide",
+            "knowledge_insights": "SOP [1] ImagePull: get, describe Events, inspect image field."
+          }
+        },
+        {
+          "id": 1,
+          "title": "Iteration 2",
+          "time": "20:51:48",
+          "validation": "Confirmed",
+          "hypothesis": "Iteration 1 confirmed ImagePullBackOff on imagepull-demo. Describe should show Failed to pull image and the exact tag. If the tag is nginx:lastest, that matches history. If it is a registry auth error, inspect pull secrets instead. Diagnose-only.",
+          "fromPrior": "Prior get named ImagePullBackOff on imagepull-demo; CrashLoop and Pending are other pods.",
+          "command": "kubectl describe pod imagepull-demo -n ts",
+          "stdout": "Name:         imagepull-demo\nNamespace:    ts\nNode:         worker-2/10.0.12.41\nStart Time:   Wed, 20 May 2026 20:11:02 +0000\nStatus:       Pending\nIP:           <none>\nContainers:\n  nginx:\n    Image:          nginx:lastest\n    State:          Waiting\n      Reason:       ImagePullBackOff\n    Ready:          False\n    Restart Count:  0\nConditions:\n  Type              Status\n  PodScheduled      True\n  Ready             False\n  ContainersReady   False\nEvents:\n  Type     Reason          Age                 From               Message\n  ----     ------          ----                ----               -------\n  Normal   Scheduled       40m                 default-scheduler  Successfully assigned ts/imagepull-demo to worker-2\n  Normal   Pulling        39m (x6 over 40m)  kubelet            Pulling image \"nginx:lastest\"\n  Warning  Failed          39m (x6 over 40m)  kubelet            Failed to pull image \"nginx:lastest\": rpc error: code = NotFound desc = failed to pull and unpack image \"docker.io/library/nginx:lastest\": not found\n  Warning  Failed          39m (x6 over 40m)  kubelet            Error: ErrImagePull\n  Warning  Failed          38m (x12 over 39m) kubelet            Error: ImagePullBackOff\n  Normal   BackOff        23s (x18 over 38m) kubelet            Back-off pulling image \"nginx:lastest\"",
+          "analysis": "Events name the image nginx:lastest (typo of latest). NotFound, not auth. Closing evidence is the pod spec image field. Next: get pod -o yaml to show the tag, then Report.",
+          "takeaways": [
+            "Failed to pull image nginx:lastest \u2014 registry returned NotFound.",
+            "ErrImagePull then ImagePullBackOff \u2014 kubelet is backing off a missing tag.",
+            "This is not a pull-secret / private-registry problem.",
+            "History RCA (misspelled lastest) is confirmed on this cluster."
+          ],
+          "llm": {
+            "hypothesis": "Image tag nginx:lastest does not exist.",
+            "command": "kubectl get pod imagepull-demo -n ts -o yaml",
+            "key_takeaways": "Failed to pull nginx:lastest: not found."
+          }
+        },
+        {
+          "id": 2,
+          "title": "Iteration 3",
+          "time": "20:51:59",
+          "validation": "Confirmed",
+          "hypothesis": "Describe already named nginx:lastest. YAML is closing evidence so Report Generation can name the exact object to patch. If the controller is a Deployment, patch that; if it is a bare pod, edit the pod spec.",
+          "fromPrior": "Events already named nginx:lastest NotFound. YAML is the closing evidence.",
+          "command": "kubectl get pod imagepull-demo -n ts -o yaml",
+          "stdout": "apiVersion: v1\nkind: Pod\nmetadata:\n  name: imagepull-demo\n  namespace: ts\n  labels:\n    app: imagepull-demo\nspec:\n  containers:\n  - name: nginx\n    image: nginx:lastest\n    imagePullPolicy: Always\n    ports:\n    - containerPort: 80\nstatus:\n  phase: Pending\n  containerStatuses:\n  - name: nginx\n    state:\n      waiting:\n        reason: ImagePullBackOff\n        message: Back-off pulling image \"nginx:lastest\"",
+          "analysis": "Pod spec image is nginx:lastest. Exact RCA is ready. Diagnose mode stops: Report Generation marks Resolved and suggests correcting the tag to nginx:latest (HITL).",
+          "takeaways": [
+            "Pod imagepull-demo in ns ts sets image: nginx:lastest.",
+            "imagePullPolicy Always forces a pull of a tag that does not exist.",
+            "phase is Pending / ImagePullBackOff \u2014 the crash is current.",
+            "Exact resolution: change the tag to nginx:latest, then verify the pod is Running."
+          ],
+          "llm": {
+            "hypothesis": "Bare pod spec uses nginx:lastest.",
+            "command": null,
+            "key_takeaways": "image: nginx:lastest.",
+            "solution": "Edit pod imagepull-demo and set image nginx:latest."
+          }
+        }
+      ],
+      "final": {
+        "outcome": "resolved",
+        "retriesUsed": 3,
+        "hypothesis": "ImagePullBackOff is a misspelled image tag, not registry auth.",
+        "solution": "Root cause: Pod imagepull-demo in ns ts sets image nginx:lastest. Evidence: ImagePullBackOff; Events Failed to pull image nginx:lastest NotFound; YAML image field (SOP [1]).",
+        "remedialAction": "Edit the pod (or its controlling object) and set image to nginx:latest, then verify the pod is Running. Apply in Creation mode with HITL.",
+        "knowledge_insights": "KB [1] ImagePull SOP and history RCA both applied; cluster evidence confirmed them.",
+        "exhaustedMessage": "Max retries reached (8). No exact solution. Report the last hypothesis and remaining probes.",
+        "knowledgeEngine": "The retrieved excerpts from K8s-ImagePullBackOff-SOP.md [1] (similarity 84%) describe ImagePullBackOff as a pull failure: wrong tag, missing pull secret, or private registry. Start with get pods, describe Failed to pull image Events, then inspect the image field. History (score 0.68, fed) cited nginx:lastest as a misspelled tag; cluster evidence confirmed it.",
+        "creationHint": "To apply this fix in Creation mode, reply in a follow-up prompt asking to create/apply the exact resources named above (or paste the YAML). I will then mutate with HITL approval and verify recovery.",
+        "lastHypothesis": "Describe already named nginx:lastest. YAML is closing evidence so Report Generation can name the exact object to patch. If the controller is a Deployment, patch that; if it is a bare pod, edit the pod spec."
+      },
+      "topology": {
+        "namespace": "ts",
+        "cluster": "workloads",
+        "focus": "image",
+        "nodes": [
+          {
+            "id": "busybox",
+            "role": "Pod",
+            "name": "busybox-pod",
+            "kind": "Pod",
+            "status": "pending",
+            "x": 16,
+            "y": 70
+          },
+          {
+            "id": "crash",
+            "role": "Pod",
+            "name": "crashloop-demo",
+            "kind": "Pod",
+            "status": "crashloop",
+            "x": 200,
+            "y": 70
+          },
+          {
+            "id": "image",
+            "role": "Pod",
+            "name": "imagepull-demo",
+            "kind": "Pod",
+            "status": "imagepull",
+            "x": 384,
+            "y": 70
+          },
+          {
+            "id": "init",
+            "role": "Pod",
+            "name": "init-fail",
+            "kind": "Pod",
+            "status": "crashloop",
+            "x": 568,
+            "y": 70
+          },
+          {
+            "id": "ready",
+            "role": "Pod",
+            "name": "readiness-probe-pod",
+            "kind": "Pod",
+            "status": "running",
+            "x": 752,
+            "y": 70
+          }
+        ],
+        "edges": []
+      }
+    },
+    {
+      "id": "busybox-pending",
+      "title": "Pending pod \u00b7 ts / busybox-pod",
+      "description": "busybox-pod in namespace ts is Pending because it cannot be scheduled: insufficient CPU on every node.",
+      "prompts": [
+        "why is busybox-pod in pending state",
+        "what is the issue with busybox-pod in the ts namespace",
+        "what is the problems with the busybox-pod in the ns ts",
+        "check busybox-pod in ns ts",
+        "check pod busybox-pod in ns ts",
+        "Pod busybox-pod in namespace ts is Pending \u2014 find why"
+      ],
+      "keywords": [
+        "busybox",
+        "busybox-pod",
+        "pending",
+        "unschedulable",
+        "failedscheduling",
+        "cpu",
+        "resource",
+        "schedule",
+        "taint"
+      ],
+      "intent": "why is busybox-pod in pending state",
+      "route": {
+        "mode": "Diagnose mode",
+        "reason": "via heuristic \u00b7 conf 0.91 \u00b7 live cluster RCA, not create/apply"
+      },
+      "history": {
+        "title": "Pending busybox \u00b7 ts",
+        "meta": "score 0.61 \u00b7 fed (above 60%) \u00b7 prior RCA: FailedScheduling insufficient CPU"
+      },
+      "knowledge": {
+        "title": "K8s-Pending-Pod-SOP.md",
+        "meta": "similarity 79% \u00b7 get wide \u2192 describe Events FailedScheduling \u2192 node capacity [1]"
+      },
+      "maxRetries": 8,
+      "turns": [
+        {
+          "id": 0,
+          "title": "Iteration 1",
+          "time": "21:19:56",
+          "validation": "New",
+          "hypothesis": "The user asked why busybox-pod in ns ts is Pending. SOP [1] says confirm phase and node first: if READY is 0/1 and NODE is empty, this is unschedulable, not a crash. History (0.61, fed) cited FailedScheduling / insufficient CPU. Confirm on this cluster before treating it as the same RCA. Do not apply yet.",
+          "fromPrior": null,
+          "command": "kubectl get pod busybox-pod -n ts -o wide",
+          "stdout": "NAME          READY   STATUS    RESTARTS   AGE   IP       NODE     NOMINATED NODE   READINESS GATES\nbusybox-pod   0/1     Pending    0          18m   <none>   <none>   <none>           <none>\n\nNAMESPACE   NAME          READY   STATUS    RESTARTS   AGE\nts          busybox-pod   0/1     Pending    0          18m",
+          "analysis": "busybox-pod exists and is Pending with no IP and no NODE. This is not CrashLoop and not ImagePull. Next: describe Events for FailedScheduling vs PVC vs taint.",
+          "takeaways": [
+            "busybox-pod exists in ns ts \u2014 this is not a missing-resource case.",
+            "STATUS is Pending, READY 0/1, NODE <none> \u2014 the pod was never scheduled.",
+            "No IP means kubelet never started a container on a node.",
+            "SOP [1]: describe Events next for FailedScheduling / PVC / taint."
+          ],
+          "llm": {
+            "hypothesis": "Pending with no node \u2014 scheduling, not a crash.",
+            "command": "kubectl get pod busybox-pod -n ts -o wide",
+            "knowledge_insights": "SOP [1] Pending: get wide, describe Events, then node capacity."
+          }
+        },
+        {
+          "id": 1,
+          "title": "Iteration 2",
+          "time": "21:20:08",
+          "validation": "Confirmed",
+          "hypothesis": "Iteration 1 confirmed unschedulable. Describe should name the scheduler message. If it is insufficient CPU, inspect requests vs node allocatable next. If it is a taint or PVC, switch path. Diagnose-only.",
+          "fromPrior": "Prior get confirmed Pending, no NODE, no IP. Need Events.",
+          "command": "kubectl describe pod busybox-pod -n ts",
+          "stdout": "Name:         busybox-pod\nNamespace:    ts\nNode:         <none>\nStart Time:   Wed, 20 May 2026 21:01:48 +0000\nStatus:       Pending\nIP:           <none>\nContainers:\n  busybox:\n    Image:          busybox:1.36\n    Requests:\n      cpu:     4\n      memory:  64Mi\n    Limits:\n      cpu:     4\n      memory:  64Mi\nConditions:\n  Type           Status\n  PodScheduled   False\nEvents:\n  Type     Reason            Age                From               Message\n  ----     ------            ----               ----               -------\n  Warning  FailedScheduling  18m (x12 over 18m) default-scheduler  0/3 nodes are available: 3 Insufficient cpu.\n  Warning  FailedScheduling  23s (x8 over 12m)  default-scheduler  0/3 nodes are available: 3 Insufficient cpu.",
+          "analysis": "Events are FailedScheduling: 0/3 nodes available, 3 Insufficient cpu. Requests cpu: 4 is the smoking gun. Closing evidence is node allocatable so the report can name the exact change (lower request or add capacity).",
+          "takeaways": [
+            "PodScheduled is False \u2014 the scheduler never bound a node.",
+            "FailedScheduling: 0/3 nodes are available: 3 Insufficient cpu.",
+            "Container requests cpu: 4 \u2014 that is why no node fits.",
+            "Image is busybox:1.36 \u2014 not ImagePullBackOff."
+          ],
+          "llm": {
+            "hypothesis": "CPU request of 4 is larger than node allocatable.",
+            "command": "kubectl get nodes -o custom-columns=NAME:.metadata.name,CPU:.status.allocatable.cpu",
+            "key_takeaways": "FailedScheduling: 3 Insufficient cpu. requests.cpu=4."
+          }
+        },
+        {
+          "id": 2,
+          "title": "Iteration 3",
+          "time": "21:20:19",
+          "validation": "Confirmed",
+          "hypothesis": "Describe already named insufficient CPU. This command is closing evidence: if every node has allocatable below 4, Report Generation can emit Resolved plus lower the request (or add nodes). Diagnose mode stops at the exact numbers.",
+          "fromPrior": "Events named Insufficient cpu. Node allocatable is the closing evidence.",
+          "command": "kubectl get nodes -o custom-columns=NAME:.metadata.name,CPU:.status.allocatable.cpu,MEM:.status.allocatable.memory",
+          "stdout": "NAME       CPU   MEM\nworker-1   2     3901640Ki\nworker-2   2     3901640Ki\nworker-3   2     3901640Ki",
+          "analysis": "Every node allocatable CPU is 2. The pod requests 4. Exact RCA is ready. Report Generation marks Resolved and suggests lowering requests.cpu to 250m (or adding capacity). Apply in Creation mode with HITL.",
+          "takeaways": [
+            "All three nodes advertise allocatable CPU 2.",
+            "busybox-pod requests cpu: 4, which cannot fit on any node.",
+            "This is not a taint, PVC, or image problem.",
+            "Exact resolution: lower requests.cpu (for example 250m) or add CPU capacity."
+          ],
+          "llm": {
+            "hypothesis": "No node has 4 CPU allocatable.",
+            "command": null,
+            "key_takeaways": "allocatable CPU is 2 on every node.",
+            "solution": "Lower busybox-pod requests.cpu below node allocatable (2)."
+          }
+        }
+      ],
+      "final": {
+        "outcome": "resolved",
+        "retriesUsed": 3,
+        "hypothesis": "Pending is FailedScheduling from an oversized CPU request, not a crash.",
+        "solution": "Root cause: Pod busybox-pod in ns ts requests cpu: 4 while every node allocatable is 2. Evidence: Pending, NODE <none>; Events FailedScheduling 3 Insufficient cpu; node list (SOP [1]).",
+        "remedialAction": "Lower requests.cpu on busybox-pod below node allocatable (for example 250m), then verify the pod is Running. Apply in Creation mode with HITL.",
+        "knowledge_insights": "KB [1] Pending SOP and history RCA both applied; cluster evidence confirmed them.",
+        "exhaustedMessage": "Max retries reached (8). No exact solution. Report the last hypothesis and remaining probes.",
+        "knowledgeEngine": "The retrieved excerpts from K8s-Pending-Pod-SOP.md [1] (similarity 79%) describe Pending as unschedulable until Events name FailedScheduling, PVC, or taint. The path is get wide \u2192 describe Events \u2192 node capacity. History (score 0.61, fed) cited insufficient CPU; this run confirmed requests.cpu=4 versus allocatable 2 on every node.",
+        "creationHint": "To apply this fix in Creation mode, reply in a follow-up prompt asking to create/apply the exact resources named above (or paste the YAML). I will then mutate with HITL approval and verify recovery.",
+        "lastHypothesis": "Describe already named insufficient CPU. This command is closing evidence: if every node has allocatable below 4, Report Generation can emit Resolved plus lower the request (or add nodes). Diagnose mode stops at the exact numbers."
+      },
+      "topology": {
+        "namespace": "ts",
+        "cluster": "workloads",
+        "focus": "busybox",
+        "nodes": [
+          {
+            "id": "busybox",
+            "role": "Pod",
+            "name": "busybox-pod",
+            "kind": "Pod",
+            "status": "pending",
+            "x": 16,
+            "y": 70
+          },
+          {
+            "id": "crash",
+            "role": "Pod",
+            "name": "crashloop-demo",
+            "kind": "Pod",
+            "status": "crashloop",
+            "x": 200,
+            "y": 70
+          },
+          {
+            "id": "image",
+            "role": "Pod",
+            "name": "imagepull-demo",
+            "kind": "Pod",
+            "status": "imagepull",
+            "x": 384,
+            "y": 70
+          },
+          {
+            "id": "init",
+            "role": "Pod",
+            "name": "init-fail",
+            "kind": "Pod",
+            "status": "crashloop",
+            "x": 568,
+            "y": 70
+          },
+          {
+            "id": "ready",
+            "role": "Pod",
+            "name": "readiness-probe-pod",
+            "kind": "Pod",
+            "status": "running",
+            "x": 752,
+            "y": 70
+          }
+        ],
+        "edges": []
+      }
+    },
+    {
+      "id": "payments-crashloop",
+      "title": "CrashLoopBackOff \u00b7 payments / api-0",
+      "description": "Pod api-0 in namespace payments is CrashLoopBackOff because the liveness probe hits /healthz before the process is listening.",
+      "prompts": [
+        "Why is pod api-0 CrashLoopBackOff in payments?",
+        "Check CrashLoopBackOff in payments",
+        "Describe CrashLoopBackOff for api-0 in payments",
+        "Pod api-0 in payments is CrashLoopBackOff"
+      ],
+      "keywords": [
+        "api-0",
+        "payments",
+        "kubepodcrashlooping",
+        "liveness",
+        "probe",
+        "healthz"
+      ],
+      "intent": "Why is pod api-0 CrashLoopBackOff in payments?",
+      "route": {
+        "mode": "Diagnose mode",
+        "reason": "via heuristic \u00b7 conf 0.93 \u00b7 live cluster RCA, not create/apply"
+      },
+      "history": {
+        "title": "api-0 CrashLoop \u00b7 payments",
+        "meta": "score 0.58 \u00b7 not fed (below 60%) \u00b7 prior RCA was a missing secret, still confirm"
+      },
+      "knowledge": {
+        "title": "K8s-CrashLoop-Probe-SOP.md",
+        "meta": "similarity 77% \u00b7 get \u2192 describe lastState/Events \u2192 previous logs; check probes [1]"
+      },
+      "maxRetries": 8,
+      "turns": [
+        {
+          "id": 0,
+          "title": "Iteration 1",
+          "time": "11:02:14",
+          "validation": "New",
+          "hypothesis": "The user reports CrashLoopBackOff on api-0 in namespace payments. SOP [1] says confirm phase and restart count first, then describe lastState and Events (probe kill vs process exit vs image). History was a missing secret but scored 0.58 so it is not fed \u2014 do not assume the same RCA. First probe: get the pod wide.",
+          "fromPrior": null,
+          "command": "kubectl get pod api-0 -n payments -o wide",
+          "stdout": "NAME    READY   STATUS             RESTARTS   AGE   IP           NODE       NOMINATED NODE   READINESS GATES\napi-0   0/1     CrashLoopBackOff   7          22m   10.44.3.8    worker-1   <none>           <none>\n\nNAME                    READY   UP-TO-DATE   AVAILABLE   AGE\ndeployment.apps/api     0/1     1            0           2d",
+          "analysis": "api-0 is a live scheduled pod in CrashLoopBackOff with 7 restarts. Image pull is unlikely (has IP and NODE). Next: describe for lastState and probe Events.",
+          "takeaways": [
+            "api-0 exists in ns payments \u2014 not a missing object.",
+            "STATUS is CrashLoopBackOff, READY 0/1, 7 restarts.",
+            "Scheduled on worker-1 with IP 10.44.3.8 \u2014 not Pending.",
+            "SOP [1]: describe lastState and Events next, not apply."
+          ],
+          "llm": {
+            "hypothesis": "CrashLoopBackOff \u2014 confirm lastState vs probe.",
+            "command": "kubectl get pod api-0 -n payments -o wide",
+            "knowledge_insights": "SOP [1] CrashLoop: get, describe, previous logs. Check probes."
+          }
+        },
+        {
+          "id": 1,
+          "title": "Iteration 2",
+          "time": "11:02:27",
+          "validation": "Confirmed",
+          "hypothesis": "Iteration 1 confirmed CrashLoop with 7 restarts on a scheduled pod. Describe should show whether kubelet killed the container (Unhealthy / Liveness probe failed) or the process exited (Error). Probe vs config vs secret.",
+          "fromPrior": "Prior get confirmed CrashLoopBackOff, 7 restarts on worker-1.",
+          "command": "kubectl describe pod api-0 -n payments",
+          "stdout": "Name:         api-0\nNamespace:    payments\nNode:         worker-1/10.0.12.21\nStatus:       Running\nIP:           10.44.3.8\nContainers:\n  api:\n    Image:          payments/api:1.4.2\n    State:          Waiting\n      Reason:       CrashLoopBackOff\n    Last State:     Terminated\n      Reason:       Error\n      Exit Code:    137\n    Ready:          False\n    Restart Count:  7\n    Liveness:\n      http-get http://:8080/healthz delay=3s timeout=1s period=5s\n    Environment:\n      APP_PORT:  8080\nEvents:\n  Type     Reason     Age                 From               Message\n  ----     ------     ----                ----               -------\n  Normal   Pulled     22m (x8 over 22m) kubelet            Container image already present on machine\n  Normal   Created    22m (x8 over 22m) kubelet            Created container api\n  Normal   Started    22m (x8 over 22m) kubelet            Started container api\n  Warning  Unhealthy  21m (x14 over 21m) kubelet            Liveness probe failed: Get \"http://10.44.3.8:8080/healthz\": dial tcp 10.44.3.8:8080: connect: connection refused\n  Warning  BackOff    23s (x22 over 20m) kubelet            Back-off restarting failed container api in pod api-0_payments",
+          "analysis": "lastState Error exit 137 plus Unhealthy: Liveness probe failed (connection refused) means kubelet killed the container before listen. Image is already present. Next: previous logs to confirm the process was still starting when the probe fired.",
+          "takeaways": [
+            "Last State is Terminated / Error / exit 137 \u2014 typically SIGKILL from the probe.",
+            "Liveness http-get /healthz delay=3s period=5s \u2014 aggressive for this process.",
+            "Event Unhealthy: connection refused on :8080/healthz.",
+            "Image is already present \u2014 not ImagePullBackOff. History secret RCA was not fed."
+          ],
+          "llm": {
+            "hypothesis": "Liveness probe is killing api-0 before listen.",
+            "command": "kubectl logs api-0 -n payments --previous",
+            "key_takeaways": "Unhealthy liveness; exit 137; connection refused."
+          }
+        },
+        {
+          "id": 2,
+          "title": "Iteration 3",
+          "time": "11:02:41",
+          "validation": "Confirmed",
+          "hypothesis": "Describe named a liveness kill. Previous logs should show the process still booting when the probe fired. If logs show listening after ~15s, the exact fix is to raise initialDelaySeconds. Do not apply yet.",
+          "fromPrior": "Describe named Unhealthy liveness / exit 137. Logs are the closing evidence.",
+          "command": "kubectl logs api-0 -n payments --previous",
+          "stdout": "payments-api 1.4.2 starting\n[main] loading config from env APP_PORT=8080\n[db] connecting to postgres\n[db] migrations ok\n[http] binding :8080\n[http] listening on :8080 after 14s\nsignal: killed",
+          "analysis": "Logs show the process reached listen after 14s, then signal: killed. Probe delay is 3s. Exact RCA is ready. Report Generation marks Resolved and suggests raising livenessProbe.initialDelaySeconds to at least 20.",
+          "takeaways": [
+            "Previous logs: listening on :8080 after 14s, then signal: killed.",
+            "Liveness delay=3s is shorter than startup \u2014 kubelet kills a healthy boot.",
+            "APP_PORT is set \u2014 this is not a missing-env case (unlike AMF).",
+            "Exact resolution: raise livenessProbe.initialDelaySeconds to 20 or more."
+          ],
+          "llm": {
+            "hypothesis": "Probe delay 3s < 14s startup.",
+            "command": null,
+            "key_takeaways": "listening after 14s; signal killed.",
+            "solution": "Set livenessProbe.initialDelaySeconds >= 20 on Deployment api."
+          }
+        }
+      ],
+      "final": {
+        "outcome": "resolved",
+        "retriesUsed": 3,
+        "hypothesis": "CrashLoop is a premature liveness probe, not a missing secret or image.",
+        "solution": "Root cause: Deployment api in ns payments has livenessProbe.initialDelaySeconds=3 while the process listens after ~14s. Evidence: CrashLoopBackOff 7 restarts; Unhealthy connection refused; previous logs listening after 14s then killed (SOP [1]).",
+        "remedialAction": "Raise livenessProbe.initialDelaySeconds on the api container to at least 20, then verify api-0 is Running. Apply in Creation mode with HITL.",
+        "knowledge_insights": "KB [1] CrashLoop probe SOP applied. History secret RCA was below the feed threshold and correctly ignored.",
+        "exhaustedMessage": "Max retries reached (8). No exact solution. Report the last hypothesis and remaining probes.",
+        "knowledgeEngine": "The retrieved excerpts from K8s-CrashLoop-Probe-SOP.md [1] (similarity 77%) describe CrashLoopBackOff as process exit versus kubelet probe kill versus image. History cited a missing secret but scored 0.58 (not fed). Cluster evidence showed Unhealthy liveness and exit 137, so the probe SOP applied and the secret RCA was ignored.",
+        "creationHint": "To apply this fix in Creation mode, reply in a follow-up prompt asking to create/apply the exact resources named above (or paste the YAML). I will then mutate with HITL approval and verify recovery.",
+        "lastHypothesis": "Describe named a liveness kill. Previous logs should show the process still booting when the probe fired. If logs show listening after ~15s, the exact fix is to raise initialDelaySeconds. Do not apply yet."
+      },
+      "topology": {
+        "namespace": "payments",
+        "cluster": "workloads",
+        "focus": "api",
+        "nodes": [
+          {
+            "id": "ing",
+            "role": "Ingress",
+            "name": "payments-ing",
+            "kind": "Ingress",
+            "status": "running",
+            "x": 80,
+            "y": 20
+          },
+          {
+            "id": "svc",
+            "role": "Service",
+            "name": "api",
+            "kind": "Service",
+            "status": "running",
+            "x": 380,
+            "y": 20
+          },
+          {
+            "id": "api",
+            "role": "Pod",
+            "name": "api-0",
+            "kind": "Pod",
+            "status": "crashloop",
+            "x": 380,
+            "y": 128
+          },
+          {
+            "id": "redis",
+            "role": "Pod",
+            "name": "redis-0",
+            "kind": "Pod",
+            "status": "running",
+            "x": 680,
+            "y": 128
+          }
+        ],
+        "edges": [
+          {
+            "from": "ing",
+            "to": "svc",
+            "label": ""
+          },
+          {
+            "from": "svc",
+            "to": "api",
+            "label": ""
+          },
+          {
+            "from": "api",
+            "to": "redis",
+            "label": ""
+          }
+        ]
+      }
+    },
+    {
+      "id": "ue-latch-calico",
+      "title": "Customer unable to latch \u00b7 Calico CNI",
+      "description": "Customer unable to latch on the network because Calico CNI pods calico-node-lxtps and calico-node-pgsd9 in kube-system are restarting (61\u201363 restarts) even though they are Ready 1/1.",
+      "prompts": [
+        "Customer unable to latch on the network",
+        "customer unable to latch onto the network",
+        "Customer cannot latch on the network",
+        "UE unable to latch on the network",
+        "why can't the customer latch on the network",
+        "Customer unable to latch on the network \u2014 find the exact cause"
+      ],
+      "keywords": [
+        "latch",
+        "latched",
+        "latching",
+        "calico",
+        "calico-node",
+        "cni",
+        "customer",
+        "ue",
+        "oai-attempt-12",
+        "oai-nr-ue"
+      ],
+      "intent": "Customer unable to latch on the network",
+      "route": {
+        "mode": "Diagnose mode",
+        "reason": "via llm \u00b7 conf 0.92 \u00b7 live cluster RCA, not create/apply"
+      },
+      "history": {
+        "title": "UE registration fail \u00b7 oai-tutorial",
+        "meta": "score 0.99 \u00b7 fed (above 60%) \u00b7 prior RCA: AMF Service selector matched no pods"
+      },
+      "knowledge": {
+        "title": "08_Standards/5G",
+        "meta": "similarity 33% \u00b7 5G NSSAI / PDU session excerpts; not K8s CNI [1]"
+      },
+      "maxRetries": 8,
+      "turns": [
+        {
+          "id": 0,
+          "title": "Iteration 1",
+          "time": "06:52:49",
+          "validation": "New",
+          "hypothesis": "The user cannot latch onto the network likely because the cluster CNI is not healthy or a critical 5G service (e.g. AMF) lacks reachable endpoints. History scored 0.99 and was fed (AMF Service selector matched no pods) but that RCA must be confirmed on this cluster, not assumed. KB excerpts [1]\u2013[5] are 5G NSSAI / PDU session text and do not describe Kubernetes CNI. First probe: get pods wide across all namespaces so we see STATUS, RESTARTS, IP, and NODE. If CNI pods are CrashLoopBackOff or workloads have no IP, describe next. Do not create or apply yet.",
+          "fromPrior": null,
+          "command": "kubectl get pods -o wide --all-namespaces",
+          "stdout": "NAMESPACE            NAME                                                     READY   STATUS             RESTARTS        AGE     IP               NODE           NOMINATED NODE   READINESS GATES\ncert-manager         cert-manager-7777974949-9bg9p                            0/1     Completed          18 (61d ago)    85d     <none>           masternode-0   <none>           <none>\ncert-manager         cert-manager-7777974949-9wcvk                            1/1     Running            43 (26m ago)    61d     10.233.117.127   workernode-1   <none>           <none>\ncert-manager         cert-manager-cainjector-64ccfb9998-h788r                 1/1     Running            67 (25m ago)    61d     10.233.117.125   workernode-1   <none>           <none>\ncert-manager         cert-manager-webhook-847f489598-jt6gb                    1/1     Running            42 (26m ago)    61d     10.233.117.121   workernode-1   <none>           <none>\ncert-manager         cert-manager-webhook-847f489598-tkz9j                    0/1     Completed          18 (61d ago)    85d     <none>           masternode-0   <none>           <none>\ndefault              crashloop-pod                                            0/1     CrashLoopBackOff   84 (5m9s ago)   23h     10.233.117.87    workernode-1   <none>           <none>\nheadlamp             my-headlamp-bc87f97cc-tdwqg                              1/1     Running            6 (26m ago)     7d20h   10.233.117.97    workernode-1   <none>           <none>\nkube-system          calico-kube-controllers-7c99df9fc4-vknsz                 1/1     Running            22 (26m ago)    37d     10.233.117.116   workernode-1   <none>           <none>\nkube-system          calico-node-lxtps                                        1/1     Running            63 (26m ago)    85d     10.40.0.34       masternode-0   <none>           <none>\nkube-system          calico-node-pgsd9                                        1/1     Running            61 (26m ago)    85d     10.40.0.35       workernode-1   <none>           <none>\nkube-system          coredns-58cc5d8ddf-fm2f9                                 1/1     Running            22 (26m ago)    37d     10.233.117.67    workernode-1   <none>           <none>\nkube-system          coredns-58cc5d8ddf-k6fq9                                 1/1     Running            64 (26m ago)    85d     10.233.125.39    masternode-0   <none>           <none>\nkube-system          dns-autoscaler-5654b864c-bd276                           1/1     Running            22 (26m ago)    37d     10.233.117.126   workernode-1   <none>           <none>\nkube-system          kube-apiserver-masternode-0                              1/1     Running            63 (26m ago)    85d     10.40.0.34       masternode-0   <none>           <none>\nkube-system          kube-controller-manager-masternode-0                     1/1     Running            63 (26m ago)    85d     10.40.0.34       masternode-0   <none>           <none>\nkube-system          kube-proxy-49kwl                                         1/1     Running            53 (26m ago)    71d     10.40.0.34       masternode-0   <none>           <none>\nkube-system          kube-proxy-wsftt                                         1/1     Running            50 (26m ago)    71d     10.40.0.35       workernode-1   <none>           <none>\nkube-system          kube-scheduler-masternode-0                              1/1     Running            63 (26m ago)    85d     10.40.0.34       masternode-0   <none>           <none>\nkube-system          metrics-server-6495584c6-fz8xj                           1/1     Running            56 (26m ago)    76d     10.233.125.41    masternode-0   <none>           <none>\nkube-system          nginx-proxy-workernode-1                                 1/1     Running            60 (17h ago)    85d     10.40.0.35       workernode-1   <none>           <none>\nkube-system          nodelocaldns-glllq                                       1/1     Running            66 (26m ago)    85d     10.40.0.35       workernode-1   <none>           <none>\nkube-system          nodelocaldns-k7lhc                                       1/1     Running            73 (26m ago)    85d     10.40.0.34       masternode-0   <none>           <none>\nlocal-path-storage   local-path-provisioner-cdf455b97-2pp56                   1/1     Running            88 (25m ago)    85d     10.233.117.95    workernode-1   <none>           <none>\nmonitoring           alertmanager-prometheus-kube-prometheus-alertmanager-0   2/2     Running            12 (26m ago)    7d23h   10.233.117.80    workernode-1   <none>           <none>\nmonitoring           prometheus-grafana-76c654c66c-fndm9                      3/3     Running            18 (26m ago)    7d23h   10.233.117.72    workernode-1   <none>           <none>\nmonitoring           prometheus-kube-prometheus-operator-7bf75cf949-zhngf     1/1     Running            12 (25m ago)    7d23h   10.233.117.102   workernode-1   <none>           <none>\nmonitoring           prometheus-kube-state-metrics-66bbc5fd9c-7wfcz           1/1     Running            10 (25m ago)    7d23h   10.233.117.114   workernode-1   <none>           <none>\nmonitoring           prometheus-prometheus-kube-prometheus-prometheus-0       2/2     Running            12 (26m ago)    7d23h   10.233.117.91    workernode-1   <none>           <none>\nmonitoring           prometheus-prometheus-node-exporter-kqwvg                1/1     Running            5 (26m ago)     7d      10.40.0.34       masternode-0   <none>           <none>\nmonitoring           prometheus-prometheus-node-exporter-wz5fr                1/1     Running            6 (26m ago)     7d23h   10.40.0.35       workernode-1   <none>           <none>\noai-attempt-12       oai-5g-basic-mysql-584488bd88-r7mqv                      1/1     Running            51 (26m ago)    72d     10.233.117.88    workernode-1   <none>           <none>\noai-attempt-12       oai-amf-565d768b6f-grps9                                 1/1     Running            51 (26m ago)    72d     10.233.117.103   workernode-1   <none>           <none>\noai-attempt-12       oai-ausf-f878dbbd8-9sp6f                                 1/1     Running            51 (26m ago)    72d     10.233.117.77    workernode-1   <none>           <none>\noai-attempt-12       oai-gnb-69cb9f6f9-zrdwr                                  1/1     Running            65 (26m ago)    65d     10.233.117.105   workernode-1   <none>           <none>\noai-attempt-12       oai-lmf-69b4ccb84c-2xpzg                                 1/1     Running            51 (26m ago)    72d     10.233.117.81    workernode-1   <none>           <none>\noai-attempt-12       oai-nr-ue-599dddf4bf-nr5z8                               1/1     Running            76 (26m ago)    65d     10.233.117.106   workernode-1   <none>           <none>\noai-attempt-12       oai-nrf-865fcbd5d5-7sf72                                 1/1     Running            51 (26m ago)    72d     10.233.117.120   workernode-1   <none>           <none>\noai-attempt-12       oai-smf-77554b687b-7qbj8                                 1/1     Running            51 (26m ago)    72d     10.233.117.118   workernode-1   <none>           <none>\noai-attempt-12       oai-traffic-server-65f7f5b586-gt7cn                      1/1     Running            51 (26m ago)    72d     10.233.117.122   workernode-1   <none>           <none>\noai-attempt-12       oai-udm-698745cf6f-9m8fj                                 1/1     Running            51 (26m ago)    72d     10.233.117.112   workernode-1   <none>           <none>\noai-attempt-12       oai-udr-844b455f44-rggwv                                 1/1     Running            51 (26m ago)    72d     10.233.117.78    workernode-1   <none>           <none>\noai-attempt-12       oai-upf-7dd599cc-d5grj                                   1/1     Running            51 (26m ago)    72d     10.233.117.69    workernode-1   <none>           <none>\n",
+          "analysis": "Most workloads have pod IPs and are Running, including OAI 5GC in oai-attempt-12 (AMF, gNB, nr-UE). That contradicts the fed history RCA of a selector with no AMF endpoints. crashloop-pod in default is a separate CrashLoopBackOff. kube-system already shows calico-node with 61\u201363 restarts. Next: inspect kube-system wide so CNI health is explicit.",
+          "takeaways": [
+            "OAI 5GC pods in ns oai-attempt-12 are Running with IPs \u2014 AMF is not missing endpoints on this cluster.",
+            "History RCA (AMF Service selector, score 0.99, fed) is not confirmed by this get.",
+            "default/crashloop-pod is CrashLoopBackOff \u2014 a separate incident, not the latch path.",
+            "kube-system calico-node-lxtps and calico-node-pgsd9 are Running but with 63 and 61 restarts.",
+            "SOP still applies: next command is kube-system wide for CNI, not apply."
+          ],
+          "llm": {
+            "hypothesis": "CNI or 5G AMF endpoints \u2014 confirm cluster-wide STATUS and IPs first.",
+            "command": "kubectl get pods -o wide --all-namespaces",
+            "knowledge_insights": "KB [1]\u2013[5] are 5G standards, not K8s CNI. History AMF-selector RCA is fed but unconfirmed."
+          }
+        },
+        {
+          "id": 1,
+          "title": "Iteration 2",
+          "time": "06:53:05",
+          "validation": "Confirmed",
+          "hypothesis": "Iteration 1 showed OAI NFs Running with IPs, so the fed AMF-selector RCA is unlikely. Calico node pods already looked noisy. kubectl get pods -n kube-system -o wide should confirm CNI / DNS / proxy Ready state and restart counts. If calico-node is CrashLoop or ImagePull, describe next; if it is Ready with high restarts, that is still a CNI instability signal.",
+          "fromPrior": "Prior get showed OAI Running with IPs and calico-node with 61\u201363 restarts. History AMF RCA not confirmed.",
+          "command": "kubectl get pods -n kube-system -o wide",
+          "stdout": "NAME                                       READY   STATUS    RESTARTS       AGE   IP               NODE           NOMINATED NODE   READINESS GATES\ncalico-kube-controllers-7c99df9fc4-vknsz   1/1     Running   22 (26m ago)   37d   10.233.117.116   workernode-1   <none>           <none>\ncalico-node-lxtps                          1/1     Running   63 (26m ago)   85d   10.40.0.34       masternode-0   <none>           <none>\ncalico-node-pgsd9                          1/1     Running   61 (26m ago)   85d   10.40.0.35       workernode-1   <none>           <none>\ncoredns-58cc5d8ddf-fm2f9                   1/1     Running   22 (26m ago)   37d   10.233.117.67    workernode-1   <none>           <none>\ncoredns-58cc5d8ddf-k6fq9                   1/1     Running   64 (26m ago)   85d   10.233.125.39    masternode-0   <none>           <none>\ndns-autoscaler-5654b864c-bd276             1/1     Running   22 (26m ago)   37d   10.233.117.126   workernode-1   <none>           <none>\nkube-apiserver-masternode-0                1/1     Running   63 (26m ago)   85d   10.40.0.34       masternode-0   <none>           <none>\nkube-controller-manager-masternode-0       1/1     Running   63 (26m ago)   85d   10.40.0.34       masternode-0   <none>           <none>\nkube-proxy-49kwl                           1/1     Running   53 (26m ago)   71d   10.40.0.34       masternode-0   <none>           <none>\nkube-proxy-wsftt                           1/1     Running   50 (26m ago)   71d   10.40.0.35       workernode-1   <none>           <none>\nkube-scheduler-masternode-0                1/1     Running   63 (26m ago)   85d   10.40.0.34       masternode-0   <none>           <none>\nmetrics-server-6495584c6-fz8xj             1/1     Running   56 (26m ago)   76d   10.233.125.41    masternode-0   <none>           <none>\nnginx-proxy-workernode-1                   1/1     Running   60 (17h ago)   85d   10.40.0.35       workernode-1   <none>           <none>\nnodelocaldns-glllq                         1/1     Running   66 (26m ago)   85d   10.40.0.35       workernode-1   <none>           <none>\nnodelocaldns-k7lhc                         1/1     Running   73 (26m ago)   85d   10.40.0.34       masternode-0   <none>           <none>\n",
+          "analysis": "Every kube-system pod listed is Ready 1/1 Running. Calico CNI is present (calico-kube-controllers plus calico-node on both nodes). Restart counts on calico-node are 63 and 61 \u2014 the CNI dataplane has been bouncing for 85 days. CoreDNS and kube-proxy are also Running. Next: confirm how CNI is labelled (app=cni vs k8s-app=calico-node) before treating Calico as the RCA.",
+          "takeaways": [
+            "kube-system has no Pending or ImagePullBackOff pods \u2014 all listed objects are Running 1/1.",
+            "calico-node-lxtps (masternode-0) RESTARTS 63; calico-node-pgsd9 (workernode-1) RESTARTS 61.",
+            "calico-kube-controllers is Running \u2014 Calico control plane is present.",
+            "CoreDNS and kube-proxy are Running \u2014 this is not a DNS-only or kube-proxy-only failure."
+          ],
+          "llm": {
+            "hypothesis": "Calico node pods are Ready but restarting heavily.",
+            "command": "kubectl get pods -n kube-system -l app=cni -o wide",
+            "key_takeaways": "calico-node RESTARTS 63/61; all kube-system pods Running."
+          }
+        },
+        {
+          "id": 2,
+          "title": "Iteration 3",
+          "time": "06:53:43",
+          "validation": "Refined",
+          "hypothesis": "kube-system is Running. Generic CNI label app=cni may not match Calico. An empty result would confirm the plugin uses a vendor selector (k8s-app=calico-node) rather than app=cni. Diagnose-only.",
+          "fromPrior": "kube-system wide named calico-node with high restarts. Confirm the CNI label.",
+          "command": "kubectl get pods -n kube-system -l app=cni -o wide",
+          "stdout": "No resources found in kube-system namespace.",
+          "analysis": "No pods match app=cni in kube-system. Calico is not installed under that label. DaemonSets across namespaces will show the real selector (expected k8s-app=calico-node) and the image.",
+          "takeaways": [
+            "No resources match label app=cni in kube-system.",
+            "CNI is not missing \u2014 it is labelled differently (Calico uses k8s-app=calico-node).",
+            "Next: list DaemonSets cluster-wide to name the CNI object and image."
+          ],
+          "llm": {
+            "hypothesis": "Calico is not selected by app=cni.",
+            "command": "kubectl get daemonsets -A -o wide",
+            "key_takeaways": "No pods with label app=cni in kube-system."
+          }
+        },
+        {
+          "id": 3,
+          "title": "Iteration 4",
+          "time": "06:54:05",
+          "validation": "Confirmed",
+          "hypothesis": "Empty app=cni means we identify CNI via DaemonSets. If calico-node shows DESIRED=READY=2 and image calico/node, scheduling is fine and the remaining question is pod restart health.",
+          "fromPrior": "Label app=cni returned no pods. DaemonSets will name the CNI.",
+          "command": "kubectl get daemonsets -A -o wide",
+          "stdout": "NAMESPACE     NAME                                  DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR            AGE     CONTAINERS      IMAGES                                                SELECTOR\nkube-system   calico-node                           2         2         2       2            2           kubernetes.io/os=linux   85d     calico-node     quay.io/calico/node:v3.31.5                           k8s-app=calico-node\nkube-system   kube-proxy                            2         2         2       2            2           kubernetes.io/os=linux   85d     kube-proxy      registry.k8s.io/kube-proxy:v1.35.4                    k8s-app=kube-proxy\nkube-system   nodelocaldns                          2         2         2       2            2           kubernetes.io/os=linux   85d     node-cache      registry.k8s.io/dns/k8s-dns-node-cache:1.25.0         k8s-app=node-local-dns\nmonitoring    prometheus-prometheus-node-exporter   2         2         2       2            2           kubernetes.io/os=linux   7d23h   node-exporter   quay.io/prometheus/node-exporter:v1.12.1-distroless   app.kubernetes.io/instance=prometheus,app.kubernetes.io/name=prometheus-node-exporter\n",
+          "analysis": "DaemonSet kube-system/calico-node is the CNI: image quay.io/calico/node:v3.31.5, selector k8s-app=calico-node, 2/2 Ready on kubernetes.io/os=linux. Scheduling matches the two nodes. YAML of that DaemonSet is closing spec evidence; then list pods by k8s-app=calico-node for restart counts.",
+          "takeaways": [
+            "DaemonSet calico-node in kube-system is 2/2 Ready, image quay.io/calico/node:v3.31.5.",
+            "Selector is k8s-app=calico-node \u2014 that is why app=cni was empty.",
+            "kube-proxy and nodelocaldns are also 2/2 \u2014 CNI is the remaining noisy object.",
+            "Scheduling is not the issue; pod restart history still needs citing."
+          ],
+          "llm": {
+            "hypothesis": "CNI is DaemonSet calico-node (Calico v3.31.5).",
+            "command": "kubectl get daemonset -A -o yaml",
+            "key_takeaways": "calico-node 2/2 Ready; image quay.io/calico/node:v3.31.5."
+          }
+        },
+        {
+          "id": 4,
+          "title": "Iteration 5",
+          "time": "06:54:18",
+          "validation": "Confirmed",
+          "hypothesis": "Wide DaemonSet output already named Calico. YAML is closing spec evidence: image, nodeSelector, and status.numberReady. Then list calico-node pods so Report Generation can cite restart counts.",
+          "fromPrior": "DaemonSets named calico-node / k8s-app=calico-node. YAML is spec evidence.",
+          "command": "kubectl get daemonset -A -o yaml",
+          "stdout": "apiVersion: apps/v1\nkind: DaemonSet\nmetadata:\n  name: calico-node\n  namespace: kube-system\n  labels:\n    k8s-app: calico-node\nspec:\n  selector:\n    matchLabels:\n      k8s-app: calico-node\n  template:\n    metadata:\n      labels:\n        k8s-app: calico-node\n    spec:\n      nodeSelector:\n        kubernetes.io/os: linux\n      containers:\n      - name: calico-node\n        image: quay.io/calico/node:v3.31.5\n        imagePullPolicy: IfNotPresent\n        env:\n        - name: DATASTORE_TYPE\n          value: kubernetes\n        - name: CALICO_NETWORKING_BACKEND\n          value: bird\n        - name: CLUSTER_TYPE\n          value: k8s,bgp\nstatus:\n  currentNumberScheduled: 2\n  desiredNumberScheduled: 2\n  numberReady: 2\n  numberAvailable: 2\n  updatedNumberScheduled: 2",
+          "analysis": "DaemonSet spec confirms image quay.io/calico/node:v3.31.5, nodeSelector kubernetes.io/os=linux, and status numberReady 2 / desiredNumberScheduled 2. No image-pull problem in the spec. Remaining evidence is pod-level RESTARTS on k8s-app=calico-node.",
+          "takeaways": [
+            "Pod template image is quay.io/calico/node:v3.31.5 \u2014 this is Calico CNI.",
+            "desiredNumberScheduled = numberReady = 2 \u2014 both nodes have a calico-node pod.",
+            "nodeSelector kubernetes.io/os=linux matches the Linux workers.",
+            "Spec does not explain the restart storm \u2014 pod list is the closing evidence."
+          ],
+          "llm": {
+            "hypothesis": "Calico spec is scheduled and Ready; pods still have high restarts.",
+            "command": "kubectl get pods -n kube-system -l k8s-app=calico-node -o wide",
+            "key_takeaways": "image quay.io/calico/node:v3.31.5; numberReady 2."
+          }
+        },
+        {
+          "id": 5,
+          "title": "Iteration 6",
+          "time": "06:54:32",
+          "validation": "Confirmed",
+          "hypothesis": "YAML already named Calico. This command is closing evidence: if calico-node pods are Ready 1/1 with 61+ restarts, Report Generation can emit Resolved plus recycle/pin the Calico image. Diagnose mode still forbids delete/apply.",
+          "fromPrior": "YAML named Calico v3.31.5 with 2/2 Ready. Pod RESTARTS are the closing evidence.",
+          "command": "kubectl get pods -n kube-system -l k8s-app=calico-node -o wide",
+          "stdout": "NAME                READY   STATUS    RESTARTS       AGE   IP           NODE           NOMINATED NODE   READINESS GATES\ncalico-node-lxtps   1/1     Running   63 (27m ago)   85d   10.40.0.34   masternode-0   <none>           <none>\ncalico-node-pgsd9   1/1     Running   61 (27m ago)   85d   10.40.0.35   workernode-1   <none>           <none>\n",
+          "analysis": "Both Calico node pods are Running 1/1 with IPs on masternode-0 and workernode-1, but RESTARTS are 63 and 61 (last restart 27m ago) over 85 days. That CNI dataplane instability is the latch RCA \u2014 not the fed AMF-selector history and not the 5G KB excerpts. Exact RCA is ready. Report Generation marks Resolved and suggests recycling calico-node pods (Creation mode + HITL).",
+          "takeaways": [
+            "calico-node-lxtps is Running 1/1 on masternode-0 with 63 restarts (27m ago), age 85d.",
+            "calico-node-pgsd9 is Running 1/1 on workernode-1 with 61 restarts (27m ago), age 85d.",
+            "Both pods have node IPs (10.40.0.34 / 10.40.0.35) \u2014 this is not FailedScheduling.",
+            "Exact resolution: recycle calico-node pods (and pin image if restarts persist)."
+          ],
+          "llm": {
+            "hypothesis": "Calico CNI dataplane is restarting on both nodes.",
+            "command": null,
+            "key_takeaways": "RESTARTS 63 and 61 on calico-node; Ready 1/1.",
+            "solution": "Delete pods -l k8s-app=calico-node in kube-system; pin Calico image if restarts persist."
+          }
+        }
+      ],
+      "final": {
+        "outcome": "resolved",
+        "retriesUsed": 6,
+        "hypothesis": "UE latch failure is Calico CNI restarting on both nodes, not a missing AMF Service selector.",
+        "solution": "Root cause: DaemonSet calico-node in ns kube-system is Running 1/1 but restarting heavily (63 and 61 restarts, last restart 27m ago) on both nodes. Evidence: cluster-wide get shows OAI 5GC pods Running with IPs; kube-system lists calico-node with high RESTARTS; DaemonSet image is quay.io/calico/node:v3.31.5, desired=ready=2; label app=cni is empty (Calico uses k8s-app=calico-node). History AMF-selector RCA was fed but cluster evidence did not confirm it. KB 5G excerpts [1]\u2013[5] did not apply to this CNI failure.",
+        "remedialAction": "Delete the faulty Calico pods to force a clean start and verify the image version matches the cluster's supported Calico release. Run:\nkubectl -n kube-system delete pod -l k8s-app=calico-node\nThe DaemonSet will recreate the pods. If restarts persist, pin the image (for example docker.io/calico/node:v3.26.1) and re-check RESTARTS stays low. Apply in Creation mode with HITL.",
+        "knowledge_insights": "KB [1]\u2013[5] 5G standards did not apply. History AMF-selector RCA was fed (0.99) and correctly overridden by cluster evidence.",
+        "exhaustedMessage": "Max retries reached (8). No exact solution. Report the last hypothesis and remaining probes.",
+        "knowledgeEngine": "The retrieved excerpts from 08_Standards/5G [1] (similarity ~27\u201333%) discuss NSSAI, PDU session handover, and QoS \u2014 none of that maps to Kubernetes pod networking or CNI. Prior history (score 0.99, fed) named an AMF Service selector with no endpoints in oai-tutorial; this run found oai-amf Running with an IP in oai-attempt-12, so that RCA was not applied. Cluster evidence instead showed DaemonSet calico-node (quay.io/calico/node:v3.31.5) Ready 2/2 with pod restart counts 63 and 61.",
+        "creationHint": "To apply this fix in Creation mode, reply in a follow-up prompt asking to create/apply the exact resources named above (or paste the YAML). I will then mutate with HITL approval and verify recovery.",
+        "lastHypothesis": "YAML already named Calico. This command is closing evidence: if calico-node pods are Ready 1/1 with 61+ restarts, Report Generation can emit Resolved plus recycle/pin the Calico image. Diagnose mode still forbids delete/apply."
+      },
+      "topology": {
+        "namespace": "kube-system",
+        "cluster": "CNI + OAI 5GC",
+        "focus": "calico0",
+        "nodes": [
+          {
+            "id": "ue",
+            "role": "UE",
+            "name": "oai-nr-ue",
+            "kind": "Pod",
+            "status": "error",
+            "x": 16,
+            "y": 70
+          },
+          {
+            "id": "gnb",
+            "role": "gNB",
+            "name": "oai-gnb",
+            "kind": "Pod",
+            "status": "running",
+            "x": 200,
+            "y": 70
+          },
+          {
+            "id": "amf",
+            "role": "AMF",
+            "name": "oai-amf",
+            "kind": "Pod",
+            "status": "running",
+            "x": 384,
+            "y": 16
+          },
+          {
+            "id": "calico0",
+            "role": "calico-node",
+            "name": "calico-node-lxtps",
+            "kind": "Pod",
+            "status": "error",
+            "x": 384,
+            "y": 128
+          },
+          {
+            "id": "calico1",
+            "role": "calico-node",
+            "name": "calico-node-pgsd9",
+            "kind": "Pod",
+            "status": "error",
+            "x": 568,
+            "y": 128
+          },
+          {
+            "id": "crash",
+            "role": "Pod",
+            "name": "crashloop-pod",
+            "kind": "Pod",
+            "status": "crashloop",
+            "x": 752,
+            "y": 70
+          }
+        ],
+        "edges": [
+          {
+            "from": "ue",
+            "to": "gnb",
+            "label": "Uu"
+          },
+          {
+            "from": "gnb",
+            "to": "amf",
+            "label": "N2"
+          },
+          {
+            "from": "amf",
+            "to": "calico0",
+            "label": "CNI"
+          },
+          {
+            "from": "calico0",
+            "to": "calico1",
+            "label": ""
+          }
+        ]
+      }
+    }
+  ],
+  "howToAdd": "Add an object to sessions[] with: id, title, description, prompts (user intents that should select this session), keywords, intent, route, history, knowledge, turns (hypothesis, analysis, takeaways, command, stdout, llm), maxRetries, and final (outcome resolved|exhausted, solution, remedialAction). The demo matches the typed intent against prompts, description, and keywords, then replays that session end to end."
+}

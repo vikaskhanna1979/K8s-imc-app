@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>K8s Troubleshooter</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="/k8s-troubleshoot.css?v=5" />
+</head>
+<body>
+  <div class="shell">
+    <div class="top">
+      <form class="intent-form" id="intentForm">
+        <h1>K8s Troubleshooter</h1>
+        <span class="pill live" id="statusPill">Idle</span>
+        <input id="intentInput" type="text" placeholder="Describe the Kubernetes issue…" autocomplete="off" />
+        <button class="btn primary" type="submit" id="btnRun">Run</button>
+        <select class="session-pick" id="promptChips" title="Known issues"></select>
+        <span class="dim match-inline" id="matchLine">Ready</span>
+      </form>
+    </div>
+    <div class="main">
+      <div class="graph-row single" id="graphRow">
+      <div class="graph">
+        <div class="row between">
+          <div class="row">
+            <b style="font-size:15px">Live workflow</b>
+            <span class="pill live" id="graphLive">Idle</span>
+          </div>
+          <span class="dim" id="graphCaption">Waiting for an issue</span>
+        </div>
+        <svg viewBox="0 0 960 214" width="100%" id="graphSvg" role="img" preserveAspectRatio="xMidYMid meet"></svg>
+        <div class="row" style="margin-top:2px">
+          <span class="dim"><span style="display:inline-block;width:7px;height:7px;border-radius:99px;background:var(--kt-ok);margin-right:6px"></span>Done</span>
+          <span class="dim"><span style="display:inline-block;width:7px;height:7px;border-radius:99px;background:var(--kt-accent);margin-right:6px"></span>Running</span>
+          <span class="dim"><span style="display:inline-block;width:7px;height:7px;border-radius:99px;background:var(--kt-dim);margin-right:6px"></span>Pending</span>
+        </div>
+      </div>
+      </div>
+      <div class="body-pane">
+        <div id="summaryHost"></div>
+        <div id="context" class="ctx hidden">
+          <div class="ctx-card">
+            <b>Analyze Intent</b>
+            <p id="routeMode" style="margin-top:4px"></p>
+            <p class="dim" id="routeReason"></p>
+          </div>
+          <div class="ctx-card">
+            <b>Gather Context</b>
+            <p id="kbTitle" style="margin-top:4px"></p>
+            <p class="dim" id="kbMeta"></p>
+            <p id="histTitle" style="margin-top:8px"></p>
+            <p class="dim" id="histMeta"></p>
+          </div>
+        </div>
+        <div class="row between" style="margin-top:12px">
+          <b style="font-size:15px">AI analysis</b>
+          <span class="dim">Latest iteration on top</span>
+        </div>
+        <div class="cards" id="cards"></div>
+      </div>
+    </div>
+  </div>
+  <script>
+    let NW = 200;
+    const NH = 58;
+    const NODES = [
+      { id: "analyze", label: "Analyze Intent", x: 16, y: 18 },
+      { id: "context", label: "Gather Context", x: 236, y: 18 },
+      { id: "generate", label: "Generate Hypothesis", x: 500, y: 18 },
+      { id: "validate", label: "Validate Hypothesis", x: 500, y: 122 },
+      { id: "report", label: "Report Generation", x: 748, y: 122 },
+    ];
+    const NODE_COL = { analyze: 0, context: 1, generate: 2, validate: 2, report: 3 };
+    const EDGES = [
+      ["analyze", "context"],
+      ["context", "generate"],
+      ["validate", "report"],
+    ];
+    const CATALOG_URL = "/k8s-demo-sessions.json";
+    const STOP = new Set(["the","a","an","in","ns","namespace","is","with","what","why","how","pod","pods","check","find","issue","issues","problems","problem","to","of","and","for","on","this","that","please","current","exact","cause","then","are","was","from","by"]);
+    let CATALOG = { sessions: [] };
+    let SCENARIO = null;
+    let STEPS = [];
+    let MAX_RETRIES = 8;
+
+    function tokens(s) {
+      return String(s || "").toLowerCase().replace(/[^a-z0-9_-]+/g, " ").split(/\s+/).filter((t) => t && t.length > 1 && !STOP.has(t));
+    }
+    function scoreSession(query, session) {
+      const q = String(query || "").toLowerCase().trim();
+      if (!q) return 0;
+      const qTokens = new Set(tokens(q));
+      let score = 0;
+      for (const p of session.prompts || []) {
+        const pl = String(p || "").toLowerCase().trim();
+        if (!pl) continue;
+        if (q === pl) return 1000;
+        if (q.length >= 12 && (pl.includes(q) || q.includes(pl))) score += 80;
+        for (const t of tokens(p)) if (qTokens.has(t)) score += 8;
+      }
+      for (const k of session.keywords || []) {
+        const kl = String(k || "").toLowerCase();
+        if (!kl) continue;
+        if (q.includes(kl) || qTokens.has(kl)) score += 20;
+      }
+      for (const t of tokens((session.description || "") + " " + (session.title || ""))) {
+        if (qTokens.has(t)) score += 3;
+      }
+      return score;
+    }
+    function matchSession(query) {
+      const ranked = (CATALOG.sessions || []).map((s) => ({ session: s, score: scoreSession(query, s) }))
+        .sort((a, b) => b.score - a.score);
+      const best = ranked[0];
+      if (!best || best.score < 15) return { session: null, score: 0, ranked };
+      return { session: best.session, score: best.score, ranked };
+    }
+    function buildSteps(scenario) {
+      const turns = scenario.turns || [];
+      const resolved = (scenario.final || {}).outcome === "resolved";
+      const steps = [
+        { kind: "node", id: "analyze", caption: "Analyze Intent · diagnose" },
+        { kind: "node", id: "context", caption: "Gather Context · knowledge, history, topology" },
+        { kind: "context", caption: "Cluster topology gathered" },
+      ];
+      turns.forEach((t, i) => {
+        const n = i + 1;
+        const tid = Number.isInteger(t.id) ? t.id : i;
+        steps.push({
+          kind: "turn",
+          turn: tid,
+          phase: "generate",
+          iter: n,
+          caption: "Iteration " + n + " · Generate Hypothesis",
+        });
+        steps.push({
+          kind: "turn",
+          turn: tid,
+          phase: "command",
+          iter: n,
+          caption: "Iteration " + n + " · Running kubectl",
+        });
+        steps.push({
+          kind: "turn",
+          turn: tid,
+          phase: "output",
+          iter: n,
+          caption: "Iteration " + n + " · Analyzing output",
+        });
+        steps.push({
+          kind: "turn",
+          turn: tid,
+          phase: "validate",
+          iter: n,
+          caption: "Iteration " + n + " · Validate Hypothesis" + (i === turns.length - 1 ? " · solution found" : ""),
+        });
+      });
+      steps.push({ kind: "node", id: "report", caption: "Report Generation" });
+      steps.push({ kind: "final", caption: resolved ? "Resolved · remedial action suggested" : "Max retries reached" });
+      return steps;
+    }
+    function loadScenario(session, userIntent) {
+      SCENARIO = Object.assign({}, session, {
+        intent: userIntent || session.intent || ((session.prompts || [])[0] || ""),
+      });
+      STEPS = buildSteps(SCENARIO);
+      MAX_RETRIES = scenarioMaxRetries(SCENARIO);
+      state.idx = -1;
+      state.collapsed = {};
+      state.showContext = false;
+      state.turnBand = {};
+      state.showFinal = false;
+      state.matchedId = session.id;
+      state.iter = 0;
+      NODES.forEach((n) => setNode(n.id, "pending"));
+    }
+    function scenarioMaxRetries(s) { return Number(s && s.maxRetries) || 8; }
+
+    const state = {
+      idx: -1,
+      playing: false,
+      serverMode: false,
+      caption: "",
+      sse: null,
+      nodeStatus: Object.fromEntries(NODES.map((n) => [n.id, "pending"])),
+      showContext: false,
+      turnBand: {},
+      showFinal: false,
+      collapsed: {},
+      timer: null,
+      matchedId: null,
+      iter: 0,
+    };
+
+    function nodeAt(id) { return NODES.find((n) => n.id === id); }
+    function colorFor(st) {
+      if (st === "running") return "var(--kt-accent)";
+      if (st === "done") return "var(--kt-ok)";
+      return "var(--kt-dim)";
+    }
+    function setNode(id, st) { state.nodeStatus[id] = st; }
+
+    function applyStep(i) {
+      state.showContext = false;
+      state.turnBand = {};
+      state.showFinal = false;
+      state.iter = 0;
+      NODES.forEach((n) => setNode(n.id, "pending"));
+      if (i < 0 || !STEPS.length || !SCENARIO) return;
+      for (let k = 0; k <= i; k++) {
+        const s = STEPS[k];
+        if (!s) continue;
+        if (s.kind === "node") setNode(s.id, "done");
+        if (s.kind === "context") state.showContext = true;
+        if (s.kind === "turn") {
+          if (s.phase === "validate") {
+            state.turnBand[s.turn] = { hyp: true, cmd: true, out: true, analyzing: true, analysis: true };
+            setNode("generate", "done");
+            setNode("validate", "done");
+          } else if (s.phase === "output") {
+            if (!state.turnBand[s.turn] || !state.turnBand[s.turn].analysis) {
+              state.turnBand[s.turn] = { hyp: true, cmd: true, out: true, analyzing: true, analysis: false };
+            }
+            setNode("generate", "done");
+            setNode("validate", "done");
+          } else if (s.phase === "command") {
+            if (!state.turnBand[s.turn] || !state.turnBand[s.turn].analyzing) {
+              state.turnBand[s.turn] = { hyp: true, cmd: true, out: true, analyzing: false, analysis: false };
+            }
+            setNode("generate", "done");
+            setNode("validate", "done");
+          } else if (!state.turnBand[s.turn]) {
+            state.turnBand[s.turn] = { hyp: true, cmd: false, out: false, analyzing: false, analysis: false };
+            setNode("generate", "done");
+          }
+        }
+        if (s.kind === "final") {
+          state.showFinal = true;
+          setNode("report", "done");
+        }
+      }
+      const cur = STEPS[i];
+      if (!cur) return;
+      if (cur.kind === "node") setNode(cur.id, "running");
+      if (cur.kind === "turn") {
+        state.iter = cur.iter || 0;
+        if (cur.phase === "generate") {
+          setNode("generate", "running");
+          setNode("validate", cur.iter > 1 ? "done" : "pending");
+          state.turnBand[cur.turn] = { hyp: true, cmd: false, out: false, analyzing: false, analysis: false };
+        } else if (cur.phase === "command") {
+          setNode("generate", "done");
+          setNode("validate", "running");
+          state.turnBand[cur.turn] = { hyp: true, cmd: true, out: true, analyzing: false, analysis: false };
+        } else if (cur.phase === "output") {
+          setNode("generate", "done");
+          setNode("validate", "running");
+          state.turnBand[cur.turn] = { hyp: true, cmd: true, out: true, analyzing: true, analysis: false };
+        } else {
+          setNode("generate", "done");
+          setNode("validate", "running");
+          state.turnBand[cur.turn] = { hyp: true, cmd: true, out: true, analyzing: true, analysis: true };
+        }
+      }
+      if (cur.kind === "final") setNode("report", "done");
+    }
+
+    function edgeStroke(id) {
+      const s = state.nodeStatus[id];
+      if (s === "running") return "var(--kt-accent)";
+      if (s === "done") return "var(--kt-ok)";
+      return "var(--kt-line)";
+    }
+
+    function graphPixelWidth(svg) {
+      let W = svg.clientWidth || 0;
+      if (W < 40) {
+        const host = svg.parentElement;
+        if (host) {
+          const cs = getComputedStyle(host);
+          W = host.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+        }
+      }
+      return W;
+    }
+
+    function layoutGraph(svg) {
+      let W = graphPixelWidth(svg);
+      if (W < 40) W = 960;
+      const pad = 20;
+      const loopExtra = 36;
+      const gap = 28;
+      NW = (W - pad * 2 - gap * 3 - loopExtra) / 4;
+      const xs = [
+        pad,
+        pad + NW + gap,
+        pad + (NW + gap) * 2 + loopExtra,
+        pad + (NW + gap) * 3 + loopExtra,
+      ];
+      NODES.forEach((n) => {
+        n.x = xs[NODE_COL[n.id]];
+      });
+      svg.setAttribute("viewBox", "0 0 " + W + " 214");
+      return W;
+    }
+
+    function renderGraph() {
+      const svg = document.getElementById("graphSvg");
+      if (!svg) return;
+      layoutGraph(svg);
+      const g = nodeAt("generate"), v = nodeAt("validate");
+      const loopActive = state.nodeStatus.generate !== "pending" || state.nodeStatus.validate !== "pending";
+      const loopCol = loopActive ? "var(--kt-accent)" : "var(--kt-line)";
+      const loopSw = loopActive ? 3.5 : 3;
+      const padX = 24, padY = 12, rr = 22;
+      const lx = g.x - padX, ly = g.y - padY;
+      const lw = NW + padX * 2, lh = (v.y + NH) - g.y + padY * 2;
+      const defs = `<defs>
+        <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+          <path d="M 0 1 L 10 5 L 0 9 z" fill="${loopCol}"/>
+        </marker>
+      </defs>`;
+      const track = `<path d="M ${lx + rr} ${ly} H ${lx + lw - rr} A ${rr} ${rr} 0 0 1 ${lx + lw} ${ly + rr}
+        V ${ly + lh - rr} A ${rr} ${rr} 0 0 1 ${lx + lw - rr} ${ly + lh}
+        H ${lx + rr} A ${rr} ${rr} 0 0 1 ${lx} ${ly + lh - rr}
+        V ${ly + rr} A ${rr} ${rr} 0 0 1 ${lx + rr} ${ly}" fill="none" stroke="${loopCol}" stroke-width="${loopSw}"/>`;
+      const down = `<line x1="${lx + lw}" y1="${g.y + NH - 4}" x2="${lx + lw}" y2="${v.y + 8}" stroke="${loopCol}" stroke-width="${loopSw}" marker-end="url(#ah)"/>`;
+      const up = `<line x1="${lx}" y1="${v.y + 8}" x2="${lx}" y2="${g.y + NH - 4}" stroke="${loopCol}" stroke-width="${loopSw}" marker-end="url(#ah)"/>`;
+      const lines = EDGES.map(([a, b]) => {
+        const A = nodeAt(a), B = nodeAt(b);
+        let x1 = A.x + NW / 2, y1 = A.y + NH / 2, x2 = B.x + NW / 2, y2 = B.y + NH / 2;
+        if (a === "validate" && b === "report") { x1 = A.x + NW + padX; x2 = B.x; }
+        if (a === "context" && b === "generate") { x1 = A.x + NW; x2 = B.x - padX; }
+        return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${edgeStroke(a)}" stroke-width="3.5" />`;
+      }).join("");
+      const nodes = NODES.map((n) => {
+        const s = state.nodeStatus[n.id];
+        const col = colorFor(s);
+        const pulse = s === "running" ? 'class="wf-run"' : "";
+        const sw = s === "running" ? 3 : 2;
+        const label = s === "running" ? "Running" : s === "done" ? "Done" : "Pending";
+        return `<g ${pulse} data-node="${n.id}" style="cursor:pointer">
+          <rect x="${n.x}" y="${n.y}" width="${NW}" height="${NH}" rx="8" fill="var(--kt-elev)" stroke="${col}" stroke-width="${sw}"/>
+          <circle cx="${n.x + 16}" cy="${n.y + 29}" r="5" fill="${col}"/>
+          <text x="${n.x + 28}" y="${n.y + 24}" fill="var(--kt-text)" font-size="17" font-weight="700">${n.label}</text>
+          <text x="${n.x + 28}" y="${n.y + 44}" fill="${col}" font-size="14" font-weight="590">${label}</text>
+        </g>`;
+      }).join("");
+      const iter = state.iter || 0;
+      const badgeY = ly + lh / 2;
+      const badge = iter
+        ? `<g>
+            <circle cx="${lx}" cy="${badgeY}" r="15" fill="var(--kt-elev)" stroke="${loopCol}" stroke-width="2.5"/>
+            <text x="${lx}" y="${badgeY + 4}" text-anchor="middle" font-size="15" font-weight="700" fill="var(--kt-text)">${iter}</text>
+          </g>`
+        : "";
+      svg.innerHTML = defs + lines + track + down + up + nodes + badge;
+      svg.querySelectorAll("[data-node]").forEach((el) => {
+        el.addEventListener("click", () => jumpToNode(el.getAttribute("data-node")));
+      });
+      const drawn = Number((svg.getAttribute("viewBox") || "").split(" ")[2]) || 0;
+      const now = graphPixelWidth(svg);
+      if (now >= 40 && drawn && Math.abs(now - drawn) > 2 && !renderGraph._fitting) {
+        renderGraph._fitting = true;
+        requestAnimationFrame(() => {
+          renderGraph._fitting = false;
+          renderGraph();
+        });
+      }
+    }
+
+    function jumpToNode(id) {
+      if (!STEPS.length || state.playing) return;
+      const map = {
+        analyze: STEPS.findIndex((s) => s.kind === "node" && s.id === "analyze"),
+        context: STEPS.findIndex((s) => s.kind === "node" && s.id === "context"),
+        generate: STEPS.findIndex((s) => s.kind === "turn" && s.phase === "generate"),
+        validate: STEPS.findIndex((s) => s.kind === "turn" && s.phase === "validate"),
+        report: STEPS.findIndex((s) => s.kind === "node" && s.id === "report"),
+      };
+      const i = map[id];
+      if (i == null || i < 0) return;
+      pause();
+      state.idx = i;
+      render();
+    }
+
+    function esc(s) {
+      return String(s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    function iconSearch() {
+      return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--kt-accent)" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>';
+    }
+    function iconNotes() {
+      return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--kt-warn)" stroke-width="2"><path d="M6 4h9l5 5v11H6z"/><path d="M15 4v5h5"/></svg>';
+    }
+    function iconTerm() {
+      return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--kt-ok)" stroke-width="2"><path d="M4 6h16v12H4z"/><path d="M7 10l3 2-3 2"/><path d="M13 14h4"/></svg>';
+    }
+
+    function oneLine(s, n) {
+      const t = String(s || "").replace(/\s+/g, " ").trim();
+      return t.length > n ? t.slice(0, n - 1) + "…" : t;
+    }
+    function reportHtml(scenario) {
+      const f = scenario.final || {};
+      const resolved = f.outcome === "resolved";
+      const status = resolved ? "RESOLVED" : "UNRESOLVED";
+      const problem = scenario.intent || scenario.description || "";
+      const kb = f.knowledgeEngine || f.knowledge_insights || (scenario.knowledge || {}).meta || "";
+      const outcomeBits = [];
+      if (resolved) {
+        if (f.solution) outcomeBits.push(esc(f.solution));
+        if (f.remedialAction) outcomeBits.push(esc(f.remedialAction));
+        if (f.creationHint) outcomeBits.push(esc(f.creationHint));
+      } else {
+        outcomeBits.push(esc(f.exhaustedMessage || f.solution || "Session ended without a confirmed fix."));
+      }
+      const cmds = (scenario.turns || []).map((t) => t.command).filter(Boolean);
+      const cmdBlock = cmds.length
+        ? `<pre class="report-cmds">${cmds.map((c) => esc(c)).join("\n")}</pre>`
+        : "<p class=\"muted\">No kubectl commands were executed.</p>";
+      const ktaItems = (scenario.turns || []).map((t) => {
+        const bits = (t.takeaways || []).filter(Boolean);
+        if (!bits.length) return "";
+        const rest = bits.slice(1).map((x) => `<p>${esc(x)}</p>`).join("");
+        return `<li>${esc(bits[0])}${rest}</li>`;
+      }).join("");
+      const lastHyp = f.lastHypothesis || f.hypothesis || ((scenario.turns || []).slice(-1)[0] || {}).hypothesis || "";
+      const summary = resolved
+        ? oneLine(f.solution || "", 240)
+        : oneLine(f.exhaustedMessage || f.solution || "", 240);
+      const stClass = "report-st";
+      return `<article class="summary ${resolved ? "" : "warn"}">
+        <div class="report-h">
+          <b>Session summary</b>
+          <span class="${stClass}">${status}</span>
+          <span class="dim">retries ${esc(f.retriesUsed)} of ${MAX_RETRIES}</span>
+        </div>
+        <div class="report-body">
+          <p class="report-meta"><b>Status:</b> ${status}</p>
+          <p class="report-meta"><b>Problem:</b> -- query '${esc(problem)}'</p>
+          ${kb ? `<div class="report-sec"><h3>Knowledge Engine analysis</h3><p>${esc(kb)}</p></div>` : ""}
+          <div class="report-sec">
+            <h3>Outcome</h3>
+            ${outcomeBits.map((p) => `<p>${p}</p>`).join("")}
+          </div>
+          <div class="report-sec">
+            <h3>What was done</h3>
+            ${cmdBlock}
+          </div>
+          ${ktaItems ? `<div class="report-sec"><h3>Key takeaways</h3><ol class="report-kta">${ktaItems}</ol></div>` : ""}
+          <div class="report-sec">
+            <h3>Final status</h3>
+            <ul class="report-final">
+              <li><b>Resolved:</b> ${resolved ? "Yes" : "No"}</li>
+              <li><b>${resolved ? "Summary" : "Analysis"}:</b> ${esc(summary)}</li>
+            </ul>
+            ${lastHyp ? `<p style="margin-top:10px"><b>Last hypothesis:</b> ${esc(lastHyp)}</p>` : ""}
+          </div>
+        </div>
+      </article>`;
+    }
+
+    function cardHtml(turn, band, active, open) {
+      if (!turn || !band) return "";
+      const showHyp = band.hyp, showCmd = band.cmd, showOut = band.out, showAn = band.analysis;
+      const analyzing = !!band.analyzing && !showAn;
+      const kta = (turn.takeaways || []).map((t) => `<li>${esc(t)}</li>`).join("");
+      const term = showOut
+        ? `<span class="prompt">$ ${esc(turn.command)}</span>\n${esc(turn.stdout)}`
+        : showCmd
+          ? `<span class="prompt">$ ${esc(turn.command)}</span>`
+          : "Waiting for kubectl…";
+      const ktaBody = showAn
+        ? `<ol>${kta}</ol>`
+        : analyzing
+          ? '<p class="dim">Analyzing output…</p>'
+          : "";
+      const livePill = !active || showAn
+        ? ""
+        : analyzing
+          ? '<span class="pill live">Analyzing</span>'
+          : '<span class="pill live">Streaming</span>';
+      const cmdBody = showCmd
+        ? `<pre class="cmd-run">$ ${esc(turn.command)}</pre>`
+        : '<p class="dim">Pending</p>';
+      return `<article class="card ${active ? "active" : ""} ${open ? "open" : ""}" data-turn="${turn.id}">
+        <div class="card-h" data-toggle-turn="${turn.id}">
+          <span class="chev"></span>
+          <b>${esc(turn.title)}</b>
+          <span class="val">${esc(turn.validation)}</span>
+          <span class="dim" style="margin-left:auto">${esc(turn.time)}</span>
+          ${livePill}
+        </div>
+        <div class="split" ${open ? "" : 'style="display:none"'}>
+          <div class="ai">
+            <div class="ai-block">
+              <p class="ai-lab">${iconSearch()} Hypothesis</p>
+              ${turn.fromPrior ? `<p class="muted" style="margin-bottom:8px">${esc(turn.fromPrior)}</p>` : ""}
+              <p>${showHyp ? esc(turn.hypothesis) : '<span class="dim">Generating hypothesis…</span>'}</p>
+              ${showAn && turn.analysis ? `<p style="margin-top:10px">${esc(turn.analysis)}</p>` : ""}
+            </div>
+            <div class="ai-block">
+              <p class="ai-lab">${iconNotes()} Key Findings (KTA)</p>
+              ${ktaBody}
+            </div>
+            <div class="ai-block">
+              <p class="ai-lab">${iconTerm()} Command executed</p>
+              ${cmdBody}
+            </div>
+          </div>
+          <div class="term-wrap">
+            <div class="term-head"><span class="dot"></span> kubectl</div>
+            <pre class="term-body">${term}</pre>
+          </div>
+        </div>
+      </article>`;
+    }
+
+    function bandFromIteration(it) {
+      const phase = (it && it.phase) || "generate";
+      if (phase === "validate") return { hyp: true, cmd: true, out: true, analyzing: true, analysis: true };
+      if (phase === "analyzing") return { hyp: true, cmd: true, out: true, analyzing: true, analysis: false };
+      if (phase === "command") return { hyp: true, cmd: true, out: true, analyzing: false, analysis: false };
+      return { hyp: true, cmd: false, out: false, analyzing: false, analysis: false };
+    }
+    function applySnapshot(ev) {
+      if (!ev) return;
+      const wf = ev.workflow || {};
+      state.caption = wf.caption || state.caption || "";
+      state.iter = wf.iter || 0;
+      (wf.nodes || []).forEach((n) => {
+        if (n && n.id) setNode(n.id, n.status || "pending");
+      });
+      const topo = ev.topology || {};
+      if (topo.visible) state.showContext = true;
+      const it = ev.iteration;
+      if (it && it.id != null) state.turnBand[it.id] = bandFromIteration(it);
+      if (ev.final) state.showFinal = true;
+      if (ev.query) document.getElementById("intentInput").value = ev.query;
+      if (ev.session_id) state.matchedId = ev.session_id;
+    }
+    async function joinOrchestratorRun(runId) {
+      state.serverMode = true;
+      state.playing = true;
+      updateMatchLine("Joining run " + runId, true);
+      let data;
+      try {
+        const res = await fetch("/v1/runs/" + encodeURIComponent(runId) + "/events");
+        if (res.status === 404) {
+          state.playing = false;
+          updateMatchLine("Run not found: " + runId, false);
+          render();
+          return;
+        }
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        data = await res.json();
+      } catch (err) {
+        state.playing = false;
+        updateMatchLine("Could not load run (" + err.message + ").", false);
+        render();
+        return;
+      }
+      const events = data.events || [];
+      const first = events[0];
+      if (first && first.session_id) {
+        const session = (CATALOG.sessions || []).find((s) => s.id === first.session_id);
+        if (session) loadScenario(session, first.query || "");
+      }
+      state.serverMode = true;
+      events.forEach(applySnapshot);
+      const last = events[events.length - 1];
+      const done = data.status === "finished" || data.status === "error"
+        || (last && (last.type === "run.finished" || last.type === "run.error"));
+      updateMatchLine((first && first.title) || runId, true);
+      if (done) {
+        state.playing = false;
+        render();
+        return;
+      }
+      render();
+      const lastSeq = last ? (last.seq || 0) : 0;
+      const es = new EventSource("/v1/runs/" + encodeURIComponent(runId) + "/stream?after_seq=" + lastSeq);
+      state.sse = es;
+      es.addEventListener("message", (msg) => {
+        if (!msg.data) return;
+        let ev;
+        try { ev = JSON.parse(msg.data); } catch (e) { return; }
+        applySnapshot(ev);
+        if (ev.type === "run.finished" || ev.type === "run.error") {
+          state.playing = false;
+          es.close();
+        }
+        render();
+      });
+    }
+    function render() {
+      if (!state.serverMode) applyStep(state.idx);
+      const step = STEPS[state.idx];
+      const caption = state.serverMode
+        ? (state.caption || "Waiting for an issue")
+        : (!SCENARIO ? "Waiting for an issue" : step ? step.caption : "Waiting for an issue");
+      let live;
+      if (state.serverMode) {
+        live = state.showFinal
+          ? ((SCENARIO && SCENARIO.final || {}).outcome === "resolved" ? "Resolved" : "Max retries")
+          : (state.playing ? "Running" : "Idle");
+      } else {
+        live = !SCENARIO ? "Idle" : state.playing ? "Running" : state.idx >= STEPS.length - 1 && state.idx >= 0 ? ((SCENARIO.final || {}).outcome === "resolved" ? "Resolved" : "Max retries") : "Idle";
+      }
+      document.getElementById("statusPill").textContent = live;
+      document.getElementById("graphLive").textContent = live;
+      document.getElementById("graphCaption").textContent = caption;
+      const busy = state.playing || state.serverMode;
+      document.getElementById("intentInput").disabled = busy;
+      document.getElementById("btnRun").disabled = busy;
+      document.getElementById("promptChips").disabled = busy;
+      renderGraph();
+
+      const ctx = document.getElementById("context");
+      ctx.classList.toggle("hidden", !state.showContext);
+      if (state.showContext && SCENARIO) {
+        document.getElementById("routeMode").textContent = (SCENARIO.route || {}).mode || "";
+        document.getElementById("routeReason").textContent = (SCENARIO.route || {}).reason || "";
+        document.getElementById("histTitle").textContent = (SCENARIO.history || {}).title || "";
+        document.getElementById("histMeta").textContent = (SCENARIO.history || {}).meta || "";
+        document.getElementById("kbTitle").textContent = (SCENARIO.knowledge || {}).title || "";
+        document.getElementById("kbMeta").textContent = (SCENARIO.knowledge || {}).meta || "";
+      }
+
+      const vis = SCENARIO ? Object.keys(state.turnBand).map(Number).sort((a, b) => b - a) : [];
+      document.getElementById("cards").innerHTML = vis.map((id) => {
+        const turn = (SCENARIO.turns || []).find((t) => t.id === id) || SCENARIO.turns[id];
+        if (!turn) return "";
+        const last = vis[0];
+        const open = state.collapsed[id] !== true;
+        return cardHtml(turn, state.turnBand[id], id === last, open);
+      }).join("");
+      if (state.playing) {
+        const pane = document.querySelector(".body-pane");
+        if (pane) pane.scrollTop = 0;
+      }
+      document.querySelectorAll("[data-toggle-turn]").forEach((el) => {
+        el.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const id = Number(el.getAttribute("data-toggle-turn"));
+          state.collapsed[id] = state.collapsed[id] !== true;
+          render();
+        });
+      });
+
+      const sh = document.getElementById("summaryHost");
+      sh.innerHTML = state.showFinal && SCENARIO ? reportHtml(SCENARIO) : "";
+    }
+
+    function pause() {
+      state.playing = false;
+      if (state.timer) { clearTimeout(state.timer); state.timer = null; }
+    }
+    function nextDelay() {
+      const cur = STEPS[state.idx];
+      if (cur && cur.kind === "node" && cur.id === "context") {
+        return 1600;
+      }
+      if (cur && cur.kind === "context") {
+        return 1200;
+      }
+      if (cur && cur.kind === "turn" && cur.phase === "command") {
+        return 2000;
+      }
+      if (cur && cur.kind === "turn" && cur.phase === "output") {
+        return 5000 + Math.random() * 5000;
+      }
+      if (cur && cur.kind === "turn" && cur.phase === "validate") {
+        return 1500;
+      }
+      if (cur && cur.kind === "turn" && cur.phase === "generate") {
+        return 1100;
+      }
+      return 800;
+    }
+    function tick() {
+      if (!state.playing) return;
+      if (state.idx >= STEPS.length - 1) { pause(); render(); return; }
+      state.idx += 1;
+      try { render(); } catch (err) { console.error(err); }
+      if (!state.playing) return;
+      state.timer = setTimeout(tick, nextDelay());
+    }
+    function play() {
+      const query = document.getElementById("intentInput").value.trim();
+      if (!SCENARIO || !STEPS.length || (query && query !== SCENARIO.intent)) {
+        if (!runFromIntent()) return;
+      }
+      if (state.timer) { clearTimeout(state.timer); state.timer = null; }
+      if (state.idx >= STEPS.length - 1) state.idx = -1;
+      state.playing = true;
+      render();
+      state.timer = setTimeout(tick, nextDelay());
+    }
+    function updateMatchLine(text, ok) {
+      const el = document.getElementById("matchLine");
+      el.textContent = text;
+      el.style.color = ok ? "var(--kt-ok)" : "var(--kt-dim)";
+    }
+    function renderChips() {
+      const host = document.getElementById("promptChips");
+      const cur = state.matchedId || "";
+      host.innerHTML = ['<option value="">Known issues</option>'].concat(
+        (CATALOG.sessions || []).map((s) => {
+          const sel = s.id === cur ? " selected" : "";
+          return `<option value="${esc(s.id)}"${sel}>${esc(s.title || s.id)}</option>`;
+        })
+      ).join("");
+    }
+    function runFromIntent() {
+      const query = document.getElementById("intentInput").value.trim();
+      if (!query) {
+        updateMatchLine("Enter a description of the issue.", false);
+        render();
+        return false;
+      }
+      const { session } = matchSession(query);
+      if (!session) {
+        const names = (CATALOG.sessions || []).map((s) => s.title || s.id).join(" · ");
+        updateMatchLine("No matching issue. Try: " + names, false);
+        render();
+        return false;
+      }
+      loadScenario(session, query);
+      updateMatchLine(session.title || session.id, true);
+      renderChips();
+      render();
+      return true;
+    }
+
+    document.getElementById("intentForm").addEventListener("submit", (e) => {
+      e.preventDefault();
+      if (state.serverMode) return;
+      pause();
+      if (!runFromIntent()) return;
+      play();
+    });
+    document.getElementById("promptChips").addEventListener("change", () => {
+      if (state.playing || state.serverMode) return;
+      const id = document.getElementById("promptChips").value;
+      if (!id) return;
+      const session = (CATALOG.sessions || []).find((s) => s.id === id);
+      if (!session) return;
+      document.getElementById("intentInput").value = (session.prompts || [])[0] || session.intent || "";
+      loadScenario(session, document.getElementById("intentInput").value.trim());
+      updateMatchLine(session.title || session.id, true);
+      render();
+      play();
+    });
+    window.addEventListener("message", (event) => {
+      if (event.data?.type === "tcap-theme-request") {
+        try { event.source?.postMessage({ type: "tcap-theme", theme: "light" }, event.origin); } catch (e) {}
+      }
+    });
+    try { parent.postMessage({ type: "tcap-theme-request" }, window.location.origin); } catch (e) {}
+
+    async function boot() {
+      try {
+        const res = await fetch(CATALOG_URL, { cache: "no-store" });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        CATALOG = await res.json();
+      } catch (err) {
+        updateMatchLine("Could not load known issues (" + err.message + ").", false);
+        render();
+        return;
+      }
+      renderChips();
+      const joinId = new URLSearchParams(window.location.search).get("run_id");
+      if (joinId) {
+        await joinOrchestratorRun(joinId);
+        return;
+      }
+      const first = (CATALOG.sessions || [])[0];
+      if (first) document.getElementById("intentInput").value = (first.prompts || [])[0] || first.intent || "";
+      render();
+      requestAnimationFrame(() => renderGraph());
+    }
+    window.addEventListener("resize", () => {
+      renderGraph();
+    });
+    boot();
+  </script>
+</body>
+</html>
