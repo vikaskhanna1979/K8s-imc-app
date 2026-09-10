@@ -184,6 +184,8 @@ def test_ui_and_static_assets():
         assert "Pending busybox" in orch.text
         assert "Payments probe" in orch.text
         assert "UE latch / Calico" in orch.text
+        assert "Recent runs" in orch.text
+        assert "GET /history" in orch.text
         assert ".orch-" in client.get("/k8s-troubleshoot.css").text
 
 
@@ -214,6 +216,7 @@ def test_execute_202_then_status_completed():
         assert payload["details"]["namespace"] == "5g-core"
         assert payload["details"]["ui_url"] == f"/?run_id={run_id}"
         assert isinstance(payload["created"], float)
+        assert payload["expires_at"] == payload["created"] + 1800
         assert set(payload["sub_agents"]) == {
             "Analyze Intent",
             "Gather Context",
@@ -287,3 +290,72 @@ def test_status_unknown_run_404():
     with TestClient(app) as client:
         st = client.get("/status", params={"run_id": "RUN-DOES-NOT-EXIST"})
         assert st.status_code == 404
+        hist = client.get("/history/RUN-DOES-NOT-EXIST")
+        assert hist.status_code == 404
+
+
+def test_history_lists_execute_and_matches_status():
+    run_id = _run_id()
+    with TestClient(app) as client:
+        ack = client.post(
+            "/execute",
+            json={"run_id": run_id, "prompt": AMF_QUERY, "pace": "fast"},
+        )
+        assert ack.status_code == 202
+        hist = client.get("/history")
+        assert hist.status_code == 200
+        body = hist.json()
+        assert body["ttl_sec"] == 1800
+        assert body["count"] >= 1
+        row = next(r for r in body["runs"] if r["run_id"] == run_id)
+        assert row["mission"] == AMF_QUERY
+        assert row["agent"] == "K8s"
+        assert row["current_status"] == "COMPLETED"
+        assert row["progress"] == 100
+        assert row["session_id"] == "amf-crashloop"
+        assert row["ui_url"] == f"/?run_id={run_id}"
+        assert isinstance(row["created"], float)
+        assert row["expires_at"] == row["created"] + body["ttl_sec"]
+
+        got = client.get(f"/history/{run_id}")
+        st = client.get("/status", params={"run_id": run_id})
+        assert got.status_code == 200
+        assert st.status_code == 200
+        assert got.json() == st.json()
+        assert got.json()["expires_at"] == row["expires_at"]
+
+
+def test_history_ttl_drops_terminal_keeps_inflight():
+    from app.main import store
+
+    terminal_id = _run_id("RUN-TTL-DONE")
+    live_id = _run_id("RUN-TTL-LIVE")
+    with TestClient(app) as client:
+        done_ack = client.post(
+            "/execute",
+            json={"run_id": terminal_id, "prompt": AMF_QUERY, "pace": "fast"},
+        )
+        assert done_ack.status_code == 202
+        live = store.create(
+            {"id": "amf-crashloop", "title": "AMF CrashLoopBackOff"},
+            AMF_QUERY,
+            "fast",
+            run_id=live_id,
+            orchestrated=True,
+        )
+        assert live.orch_status == "ACCEPTED"
+        done = store.get(terminal_id)
+        assert done is not None
+        assert done.orch_status == "COMPLETED"
+        past = store.now() - store.ttl_sec - 1
+        done.created = past
+        live.created = past
+
+        hist = client.get("/history").json()
+        ids = [r["run_id"] for r in hist["runs"]]
+        assert terminal_id not in ids
+        assert live_id in ids
+        assert client.get("/status", params={"run_id": terminal_id}).status_code == 404
+        assert client.get(f"/history/{terminal_id}").status_code == 404
+        assert client.get("/status", params={"run_id": live_id}).status_code == 200
+        assert client.get(f"/history/{live_id}").status_code == 200

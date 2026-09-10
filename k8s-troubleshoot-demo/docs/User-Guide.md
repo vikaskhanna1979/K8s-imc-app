@@ -169,6 +169,24 @@ Suggested orchestrator behaviour:
 
 The joined page disables the intent bar and Run button so the operator cannot start a second local replay on top of the orchestrator run.
 
+### 2.4 History — `GET /history` and `GET /history/{run_id}`
+
+Finished and in-flight runs stay in memory for **30 minutes** from `created` (override with `K8S_RUN_HISTORY_TTL_SEC`). The `/orch` console lists them under **Recent runs**.
+
+```bash
+curl -sS http://127.0.0.1:8115/history
+curl -sS http://127.0.0.1:8115/history/RUN-K8S-SCN-1042-1
+```
+
+| Call | Response |
+| --- | --- |
+| `GET /history` | `{ ttl_sec, count, runs[] }` newest first. Each row has `run_id`, `mission`, `current_status`, `progress`, `session_id`, `created`, `expires_at`, `ui_url`. |
+| `GET /history/{run_id}` | Same body as `GET /status` (includes `expires_at`). Unknown or expired → **404**. |
+
+In-flight (`ACCEPTED` / `RUNNING`) runs are never dropped. Terminal `COMPLETED` / `FAILED` runs disappear after the TTL; `/status` then 404s as well.
+
+The `/orch` page polls `GET /history` every 5s and refreshes after each card Run.
+
 ---
 
 ## 3. Scenario catalog (all links)
@@ -404,6 +422,8 @@ Run section 3.5. For each completed status payload check:
 | Test | How | Expected |
 | --- | --- | --- |
 | Unknown run | [http://127.0.0.1:8115/status?run_id=RUN-DOES-NOT-EXIST](http://127.0.0.1:8115/status?run_id=RUN-DOES-NOT-EXIST) | HTTP **404** |
+| Expired history | Wait 30 min after COMPLETED, or age `created` past TTL | Omitted from `GET /history`; `/status` and `/history/{id}` **404** |
+| Recent runs on `/orch` | Trigger any card, then look at **Recent runs (30 min)** | Row with status, mission, Open agent |
 | Unknown UI join | [http://127.0.0.1:8115/?run_id=RUN-DOES-NOT-EXIST](http://127.0.0.1:8115/?run_id=RUN-DOES-NOT-EXIST) | Match line: **Run not found** |
 | Unmatched prompt | `POST /execute` with `"prompt":"unrelated xyzzy widget"` and `run_id` `RUN-K8S-FAIL-1` | 202, then `/status` **FAILED** (HTTP 200), `current_response` mentions no catalog match |
 | Idempotent retry | `POST /execute` twice with same id + same AMF prompt | Both 202; second body’s `current_status` is current (often `RUNNING` or `COMPLETED`) |
@@ -447,8 +467,9 @@ Minimal integration (no code in this repo):
 3. **On 202** — store `run_id`; start a 1–2s poll of `GET /status?run_id=`.
 4. **Render poll** — status chip from `current_status`, bar from `progress`, subtitle from `current_response`, optional tree from `sub_agents`.
 5. **Agent button** — `href = agentBase + details.ui_url` (or `agentBase + "/?run_id=" + run_id`). Open in new tab or iframe. Label e.g. “Open K8s Troubleshooter”.
-6. **Stop polling** on `COMPLETED` or `FAILED`. Keep the same link for the historical view.
-7. **Multi-agent missions** — one `run_id` per agent instance. Never share a `run_id` across K8s and RAN.
+6. **Recent runs** — `GET /history` for a 30-minute list; `GET /history/{run_id}` for a full status payload. In-flight runs stay listed until they finish, then until TTL.
+7. **Stop polling** on `COMPLETED` or `FAILED`. Keep the same link for the historical view.
+8. **Multi-agent missions** — one `run_id` per agent instance. Never share a `run_id` across K8s and RAN.
 
 Pseudo-code:
 

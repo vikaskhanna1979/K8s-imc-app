@@ -12,7 +12,7 @@
   Analysis:  .card, .split, .ai, .ai-block, .ai-lab, .cmd-run
   Terminal:  .term-wrap, .term-head, .term-body
   Status:    .pill, .val, .summary
-  Orchestrator (/orch): .orch-page, .orch-grid, .orch-card, .orch-track
+  Orchestrator (/orch): .orch-page, .orch-grid, .orch-card, .orch-track, .orch-history
 */
 
 @import url("https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap");
@@ -194,6 +194,11 @@ p { margin: 0; }
 }
 .btn.primary:hover { filter: brightness(1.08); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+a.btn {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
 
 .intent-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .intent-form input[type="text"] {
@@ -528,6 +533,75 @@ p { margin: 0; }
   display: flex;
   gap: 8px;
   margin-top: 4px;
+}
+.orch-history {
+  margin-top: 24px;
+  background: var(--kt-panel);
+  border: 1px solid var(--kt-line);
+  border-radius: var(--kt-radius-md);
+  padding: 16px;
+}
+.orch-history-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.orch-history-head h2 {
+  font-size: 17px;
+  line-height: 24px;
+  margin: 0;
+}
+.orch-history-empty {
+  margin: 0;
+}
+.orch-hist-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "main open"
+    "id open"
+    "age open";
+  gap: 4px 16px;
+  align-items: center;
+  padding: 12px 0;
+  border-top: 1px solid var(--kt-line);
+}
+.orch-hist-row:first-child { border-top: 0; }
+.orch-hist-main {
+  grid-area: main;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.orch-hist-mission {
+  margin: 0;
+  font-size: 15px;
+  line-height: 22px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.orch-hist-id {
+  grid-area: id;
+  margin: 0;
+  font-family: var(--kt-font-mono);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.orch-hist-age {
+  grid-area: age;
+  margin: 0;
+  font-size: 13px;
+}
+.orch-hist-row > .btn {
+  grid-area: open;
+  justify-self: end;
+  text-decoration: none;
 }
 
 @media (max-width: 900px) {

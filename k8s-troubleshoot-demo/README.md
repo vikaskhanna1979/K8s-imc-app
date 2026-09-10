@@ -27,7 +27,7 @@ Open:
 
 That is the current Troubleshooter page (intent bar, workflow, topology after Gather Context, AI analysis, kubectl pane). Catalog is loaded from `http://127.0.0.1:8115/k8s-demo-sessions.json`. There is no portal header, sidebar, or iframe.
 
-Lightweight orchestrator console (trigger each catalog scenario, poll `/status` every 1s, open the agent UI):
+Lightweight orchestrator console (trigger each catalog scenario, poll `/status` every 1s, list recent runs for 30 minutes):
 
 `http://127.0.0.1:8115/orch`
 
@@ -71,6 +71,9 @@ curl -sS -X POST http://127.0.0.1:8115/execute \
 
 # poll until COMPLETED or FAILED (always HTTP 200 once the run exists)
 curl -sS "http://127.0.0.1:8115/status?run_id=RUN-K8S-SCN-1042-1"
+
+# list runs still in the 30-minute window
+curl -sS http://127.0.0.1:8115/history
 ```
 
 Open the live UI at the current snapshot (not a replay from the start):
@@ -82,9 +85,11 @@ Multiple `run_id`s can run at the same time in one process. Duplicate `POST /exe
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/execute` | `{ "run_id", "prompt", "details"? }` → **202** `{ run_id, current_status: ACCEPTED, agent: "K8s", message }` |
-| `GET` | `/status?run_id=` | Poll `{ mission, current_status, current_response, progress, details, created, sub_agents }` (`ACCEPTED` / `RUNNING` / `COMPLETED` / `FAILED`) |
+| `GET` | `/status?run_id=` | Poll `{ mission, current_status, current_response, progress, details, created, expires_at, sub_agents }` (`ACCEPTED` / `RUNNING` / `COMPLETED` / `FAILED`) |
+| `GET` | `/history` | `{ ttl_sec, count, runs[] }` — previous runs kept 30 minutes (`K8S_RUN_HISTORY_TTL_SEC`) |
+| `GET` | `/history/{run_id}` | Same payload as `/status`. Unknown or expired → 404 |
 
-`details.ui_url` is `/?run_id=...`. `GET /status` for an unknown run is 404. Catalog miss still 202s, then polls as `FAILED`.
+`details.ui_url` is `/?run_id=...`. `GET /status` for an unknown or expired run is 404. Catalog miss still 202s, then polls as `FAILED`.
 
 ## Replay API (graph updates)
 
@@ -117,9 +122,11 @@ chmod +x run-prompt.sh
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/orch` | Lightweight orchestrator console (five scenario cards) |
+| `GET` | `/orch` | Lightweight orchestrator console (five scenario cards + recent runs) |
 | `POST` | `/execute` | Orchestrator start (202, orchestrator-owned `run_id`) |
 | `GET` | `/status?run_id=` | Orchestrator poll |
+| `GET` | `/history` | Recent runs (30 min TTL) |
+| `GET` | `/history/{run_id}` | Same as `/status` for a historical run |
 | `POST` | `/v1/runs` | `{ "query", "pace": "realtime"\|"fast" }` → `{ run_id, session_id, title, status, stream_url, events_url }` (422 if no match) |
 | `GET` | `/v1/runs/{id}` | Current snapshot |
 | `GET` | `/v1/runs/{id}/stream?after_seq=0` | SSE snapshots; ping; closes on `run.finished` / `run.error` |

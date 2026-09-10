@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from app.orch_status import build_status, execute_ack
+from app.orch_status import build_history_list, build_status, execute_ack
 from app.replay import catalog_summaries, match_session, timeline_events
 from app.store import Run, RunConflict, RunStore
 
@@ -184,7 +184,20 @@ def orch_status(run_id: str = Query(..., min_length=1)) -> dict[str, Any]:
     run = store.get(run_id)
     if not run:
         raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
-    return build_status(run)
+    return build_status(run, ttl_sec=store.ttl_sec)
+
+
+@app.get("/history")
+def list_history() -> dict[str, Any]:
+    return build_history_list(store)
+
+
+@app.get("/history/{run_id}")
+def get_history_run(run_id: str) -> dict[str, Any]:
+    run = store.get(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
+    return build_status(run, ttl_sec=store.ttl_sec)
 
 
 @app.post("/v1/runs")

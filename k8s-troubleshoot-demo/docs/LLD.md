@@ -80,10 +80,10 @@ Two consumers share the same catalog. The isolated UI can still replay locally. 
 ```
 k8s-troubleshoot-demo/
 ├── app/
-│   ├── main.py          # FastAPI routes, CORS, SSE, emit_run, /execute, /status
+│   ├── main.py          # FastAPI routes, CORS, SSE, emit_run, /execute, /status, /history
 │   ├── replay.py        # catalog match + step timeline + snapshots
-│   ├── orch_status.py   # orchestrator GET /status DTO
-│   └── store.py         # Run dataclass + in-memory store + fan-out
+│   ├── orch_status.py   # orchestrator GET /status and /history DTOs
+│   └── store.py         # Run dataclass + in-memory store + 30-min history TTL
 ├── static/
 │   ├── k8s-demo-sessions.json       # stub catalog (source of truth)
 │   ├── k8s-troubleshoot-replay.html # isolated UI
@@ -99,7 +99,7 @@ Responsibilities:
 - Load catalog at import and again on lifespan startup (`_load_catalog`).
 - Serve UI, CSS, and raw catalog JSON.
 - Create runs, emit events, stream SSE.
-- Orchestrator `POST /execute` (202) and `GET /status`.
+- Orchestrator `POST /execute` (202), `GET /status`, `GET /history`, `GET /history/{run_id}`.
 
 Process-global state:
 
@@ -112,6 +112,7 @@ Environment:
 | --- | --- | --- |
 | `K8S_DEMO_CORS_ORIGINS` | `*` | CORS allow list (comma-separated) |
 | `K8S_DEMO_PORT` | `8115` | Used only by `python -m app.main` |
+| `K8S_RUN_HISTORY_TTL_SEC` | `1800` | How long terminal runs stay in `GET /history` / `GET /status` (seconds). In-flight runs are never pruned. |
 
 ### 4.2 `app/replay.py` — matching and timeline
 
@@ -131,11 +132,15 @@ Key exports:
 
 ### 4.3 `app/store.py` — run lifecycle
 
-`Run` is the unit of work. Orchestrator runs use the caller-supplied `run_id` and start at `orch_status=ACCEPTED`. `RunStore.append` assigns `seq`, updates `snapshot` / `status` / `orch_status` (`RUNNING` → `COMPLETED` / `FAILED`), and `put_nowait`s to SSE subscriber queues. Duplicate execute with a different prompt raises `RunConflict` (HTTP 409).
+`Run` is the unit of work. Orchestrator runs use the caller-supplied `run_id` and start at `orch_status=ACCEPTED`. `RunStore.append` assigns `seq`, updates `snapshot` / `status` / `orch_status` (`RUNNING` → `COMPLETED` / `FAILED`) and `finished_at`, and `put_nowait`s to SSE subscriber queues. Duplicate execute with a different prompt raises `RunConflict` (HTTP 409).
+
+`RunStore` keeps runs for `ttl_sec` (default 1800) measured from `created`. Lazy `prune()` on create/get/list drops terminal `COMPLETED`/`FAILED` runs past that window. `ACCEPTED`/`RUNNING` are never dropped. `list_history()` returns remaining runs newest-first. `expires_at` on API payloads is `created + ttl_sec`.
 
 ### 4.4 Static UI
 
 Single-file HTML. Standalone mode: same scoring, step list, delays, and band-reveal logic as Python. Orchestrator join mode (`/?run_id=`): fetch buffered snapshots, `applySnapshot` each (no timed replay from the start), then `EventSource` for the remainder. Intent controls stay disabled while attached to an orchestrator run.
+
+`GET /orch` serves `k8s-orchestrator.html`: five scenario cards plus a **Recent runs** panel that polls `GET /history` every 5s.
 
 ---
 
@@ -431,11 +436,14 @@ Base URL: `http://<host>:8115`
 | --- | --- | --- |
 | `GET` | `/health` | `{ "status": "ok" }` |
 | `GET` | `/` | Isolated UI HTML |
+| `GET` | `/orch` | Lightweight orchestrator console (scenario cards + recent runs) |
 | `GET` | `/k8s-troubleshoot.css` | Component stylesheet |
 | `GET` | `/k8s-demo-sessions.json` | Full catalog (includes stdout / llm stubs) |
 | `GET` | `/v1/catalog` | Summaries only: `id`, `title`, `description`, `prompts`, `keywords` — **no turns / stdout** |
 | `POST` | `/execute` | Orchestrator: `{ run_id, prompt, details? }` → **202** `{ run_id, current_status: ACCEPTED, agent, message }` |
-| `GET` | `/status?run_id=` | Orchestrator poll (`ACCEPTED` / `RUNNING` / `COMPLETED` / `FAILED`). Unknown run → 404. FAILED is still HTTP 200. |
+| `GET` | `/status?run_id=` | Orchestrator poll (`ACCEPTED` / `RUNNING` / `COMPLETED` / `FAILED`). Unknown or expired run → 404. FAILED is still HTTP 200. Includes `expires_at`. |
+| `GET` | `/history` | `{ ttl_sec, count, runs[] }` — in-memory runs still inside the 30-minute window, newest first |
+| `GET` | `/history/{run_id}` | Same payload as `GET /status` (plus `expires_at`). Unknown or expired → 404. |
 | `POST` | `/v1/runs` | Body `{ "query": str, "pace": "realtime"\|"fast" }` |
 | `GET` | `/v1/runs/{id}` | `{ run_id, session_id, title, status, seq, snapshot }` |
 | `GET` | `/v1/runs/{id}/events?after_seq=0` | Buffered events with `seq > after_seq` |
@@ -587,6 +595,7 @@ TCAP iframe leftovers: `postMessage` `tcap-theme-request` / `tcap-theme` (always
 | Unknown query (`POST /execute`) | 202 then poll `FAILED` |
 | Duplicate `run_id` + different prompt | 409 |
 | Unknown `run_id` | 404 |
+| Expired terminal run (`created` older than TTL) | 404 on `/status` and `/history/{run_id}`; omitted from `GET /history` |
 | Emitter exception | `run.error` snapshot appended; SSE closes; poll `FAILED` |
 | Catalog file missing at import | Process fails to start |
 | UI catalog fetch fail | Match line error; no chips |
@@ -669,7 +678,8 @@ Until those exist, **the agent application is a deterministic catalog player** w
 | --- | --- |
 | `app/main.py` | Routes, CORS, `emit_run`, SSE generator |
 | `app/replay.py` | Match, steps, delays, snapshots |
-| `app/store.py` | `Run`, seq, status, subscriber fan-out |
+| `app/store.py` | `Run`, seq, status, 30-minute history TTL, subscriber fan-out |
+| `static/k8s-orchestrator.html` | Scenario cards + recent-runs panel (`GET /history`) |
 | `static/k8s-demo-sessions.json` | All stubbed LLM / kubectl / topology content |
 | `static/k8s-troubleshoot-replay.html` | Client-side matcher, player, renderer |
 | `static/k8s-troubleshoot.css` | Layout + tokens |

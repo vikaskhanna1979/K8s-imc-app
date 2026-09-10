@@ -1,10 +1,10 @@
-"""Map an in-memory Run to the orchestrator GET /status payload (api.md)."""
+"""Map an in-memory Run to orchestrator GET /status and GET /history payloads (api.md)."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from app.store import Run
+from app.store import Run, RunStore
 
 AGENT = "K8s"
 
@@ -85,14 +85,14 @@ def _sub_agents(run: Run) -> dict[str, dict[str, str]]:
     return out
 
 
-def build_status(run: Run) -> dict[str, Any]:
+def build_status(run: Run, *, ttl_sec: int | None = None) -> dict[str, Any]:
     snapshot = run.snapshot or {}
     topo = snapshot.get("topology") or {}
     details = dict(run.details or {})
     details["session_id"] = run.session_id or None
     details["namespace"] = topo.get("namespace")
     details["ui_url"] = f"/?run_id={run.run_id}"
-    return {
+    payload: dict[str, Any] = {
         "run_id": run.run_id,
         "mission": run.mission or run.query,
         "agent": AGENT,
@@ -103,6 +103,32 @@ def build_status(run: Run) -> dict[str, Any]:
         "created": run.created,
         "sub_agents": _sub_agents(run),
     }
+    if ttl_sec is not None:
+        payload["expires_at"] = run.expires_at(ttl_sec)
+    return payload
+
+
+def build_history_item(run: Run, ttl_sec: int) -> dict[str, Any]:
+    status = build_status(run, ttl_sec=ttl_sec)
+    return {
+        "run_id": run.run_id,
+        "mission": status["mission"],
+        "agent": status["agent"],
+        "current_status": status["current_status"],
+        "progress": status["progress"],
+        "session_id": run.session_id or None,
+        "created": run.created,
+        "expires_at": run.expires_at(ttl_sec),
+        "ui_url": f"/?run_id={run.run_id}",
+        "current_response": status["current_response"],
+        "title": run.title,
+    }
+
+
+def build_history_list(store: RunStore) -> dict[str, Any]:
+    ttl = store.ttl_sec
+    runs = [build_history_item(run, ttl) for run in store.list_history()]
+    return {"ttl_sec": ttl, "count": len(runs), "runs": runs}
 
 
 def execute_ack(run: Run, *, queued: bool = False) -> dict[str, str]:

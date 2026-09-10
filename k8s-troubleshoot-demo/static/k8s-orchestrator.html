@@ -6,16 +6,23 @@
   <title>K8s orchestrator</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="stylesheet" href="/k8s-troubleshoot.css?v=5" />
+  <link rel="stylesheet" href="/k8s-troubleshoot.css?v=6" />
 </head>
 <body>
   <div class="orch-page">
     <header class="orch-top">
       <h1>K8s orchestrator</h1>
-      <p class="dim orch-lede">Each Run calls POST /execute, then polls GET /status every 1s. Open agent joins the Troubleshooter at the current snapshot.</p>
+      <p class="dim orch-lede">Each Run calls POST /execute, then polls GET /status every 1s. Recent runs stay listed for 30 minutes (GET /history). Open agent joins the Troubleshooter at the current snapshot.</p>
       <a class="orch-back" href="/">Troubleshooter</a>
     </header>
     <div class="orch-grid" id="orchGrid"></div>
+    <section class="orch-history" id="orchHistory" aria-labelledby="orchHistoryTitle">
+      <div class="orch-history-head">
+        <h2 id="orchHistoryTitle">Recent runs (30 min)</h2>
+        <p class="dim" id="orchHistoryMeta"></p>
+      </div>
+      <div id="orchHistoryList"></div>
+    </section>
   </div>
   <script>
 (function () {
@@ -166,6 +173,7 @@
         }
         openBtn.disabled = false;
         apply("ACCEPTED", 0, "ACCEPTED");
+        refreshHistory();
         await pollOnce();
         if (!TERMINAL[el.dataset.status]) {
           state.timer = setInterval(pollOnce, 1000);
@@ -186,6 +194,87 @@
     bindCard(s, el);
     grid.appendChild(el);
   });
+
+  const historyTitle = document.getElementById("orchHistoryTitle");
+  const historyMeta = document.getElementById("orchHistoryMeta");
+  const historyList = document.getElementById("orchHistoryList");
+
+  function formatDuration(sec) {
+    sec = Math.max(0, Math.floor(sec));
+    if (sec < 60) return sec + "s";
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    if (m < 60) return s ? m + "m " + s + "s" : m + "m";
+    const h = Math.floor(m / 60);
+    return h + "h " + (m % 60) + "m";
+  }
+
+  function ttlMinutes(ttlSec) {
+    return Math.max(1, Math.round((Number(ttlSec) || 1800) / 60));
+  }
+
+  function renderHistory(data) {
+    const now = Date.now() / 1000;
+    const ttl = Number(data.ttl_sec) || 1800;
+    const mins = ttlMinutes(ttl);
+    historyTitle.textContent = "Recent runs (" + mins + " min)";
+    const runs = data.runs || [];
+    historyMeta.textContent = runs.length
+      ? runs.length + " run" + (runs.length === 1 ? "" : "s")
+      : "";
+    if (!runs.length) {
+      historyList.innerHTML =
+        '<p class="dim orch-history-empty">No runs in the last ' + mins + " minutes</p>";
+      return;
+    }
+    historyList.innerHTML = "";
+    runs.forEach(function (run) {
+      const row = document.createElement("article");
+      row.className = "orch-hist-row";
+      const status = run.current_status || "";
+      const age = formatDuration(now - Number(run.created || now)) + " ago";
+      const left = IN_FLIGHT[status]
+        ? "in progress"
+        : formatDuration(Number(run.expires_at || now) - now) + " left";
+      const mission = document.createElement("p");
+      mission.className = "orch-hist-mission";
+      mission.textContent = run.mission || run.title || run.run_id;
+      const idEl = document.createElement("p");
+      idEl.className = "dim orch-hist-id";
+      idEl.textContent = run.run_id;
+      const meta = document.createElement("p");
+      meta.className = "dim orch-hist-age";
+      meta.textContent = age + " · " + left;
+      const open = document.createElement("a");
+      open.className = "btn";
+      open.href = run.ui_url || "/?run_id=" + encodeURIComponent(run.run_id);
+      open.target = "_blank";
+      open.rel = "noopener";
+      open.textContent = "Open agent";
+      row.innerHTML =
+        '<div class="orch-hist-main">' +
+          '<span class="' + pillClass(status) + '">' + (status || "Idle") + "</span>" +
+        "</div>";
+      row.querySelector(".orch-hist-main").appendChild(mission);
+      row.appendChild(idEl);
+      row.appendChild(meta);
+      row.appendChild(open);
+      historyList.appendChild(row);
+    });
+  }
+
+  async function refreshHistory() {
+    try {
+      const res = await fetch("/history");
+      if (!res.ok) return;
+      renderHistory(await res.json());
+    } catch (_err) {
+      /* keep last list */
+    }
+  }
+
+  refreshHistory();
+  setInterval(refreshHistory, 5000);
 })();
   </script>
 </body>

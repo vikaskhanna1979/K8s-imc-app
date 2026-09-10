@@ -73,3 +73,25 @@
         } 
     }
 }
+4.6 GET /history — list runs kept for 30 minutes
+{
+    "ttl_sec": 1800,
+    "count": 1,
+    "runs": [
+        {
+            "run_id": "RUN-K8S-SCN-1042-1",
+            "mission": "Why is open5gs-amf-0 CrashLoopBackOff in 5g-core?",
+            "agent": "K8s",
+            "current_status": "COMPLETED",
+            "progress": 100,
+            "session_id": "amf-crashloop",
+            "created": 1788960000.12,
+            "expires_at": 1788961800.12,
+            "ui_url": "/?run_id=RUN-K8S-SCN-1042-1",
+            "current_response": "RCA complete",
+            "title": "AMF CrashLoopBackOff"
+        }
+    ]
+}
+4.7 GET /history/{run_id} — same payload as GET /status (plus expires_at)
+Unknown or expired run → HTTP 404. In-flight ACCEPTED/RUNNING runs are never pruned. Terminal COMPLETED/FAILED runs drop after ttl_sec from created (default 1800). GET /status also 404s after prune.
