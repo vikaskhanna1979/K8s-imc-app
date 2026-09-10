@@ -2,6 +2,8 @@
 
 This guide is for testers and for anyone wiring the **multi-domain orchestrator** to this agent. The agent is a stubbed catalog player (no live LLM or cluster). The orchestrator still talks to it the same way it would a real domain agent: **trigger → poll → open the agent UI**.
 
+HTTP field lists and a client sketch: [Orchestrator-API.md](Orchestrator-API.md). How the in-app `/orch` page calls those APIs: [In-House-Orchestrator.md](In-House-Orchestrator.md). New to the code: [Code-Walkthrough.md](Code-Walkthrough.md).
+
 **Base URL (local):** `http://127.0.0.1:8115`  
 **Health:** [http://127.0.0.1:8115/health](http://127.0.0.1:8115/health)  
 **Orchestrator console:** [http://127.0.0.1:8115/orch](http://127.0.0.1:8115/orch)
@@ -499,4 +501,4 @@ while True:
 - No Redis: runs live in **one process** memory. Restarting uvicorn drops all `run_id`s (UI join then shows run not found).
 - Demo `POST /v1/runs` still exists for the CLI (`run-prompt.sh`). The orchestrator should use **`/execute` + `/status` only**.
 
-Related: [LLD](LLD.md) · orchestrator contract [api.md](../../api.md) · [README](../README.md)
+Related: [Orchestrator API](Orchestrator-API.md) · [In-house orchestrator](In-House-Orchestrator.md) · [Code walkthrough](Code-Walkthrough.md) · [LLD](LLD.md) · shared envelope [api.md](../api.md) · [README](../README.md)

@@ -5,6 +5,14 @@ It does **not** use the TCAP portal, agent-runtime-service, kubeconfig, or an LL
 
 **How to test (orchestrator trigger, poll, UI links for every scenario):** [docs/User-Guide.md](docs/User-Guide.md)
 
+**Integrate with an external orchestrator:** [docs/Orchestrator-API.md](docs/Orchestrator-API.md)
+
+**In-house `/orch` flow (functions + APIs):** [docs/In-House-Orchestrator.md](docs/In-House-Orchestrator.md)
+
+**New to this module:** [docs/Code-Walkthrough.md](docs/Code-Walkthrough.md)
+
+**As-built design:** [docs/LLD.md](docs/LLD.md)
+
 ## Run in isolation
 
 ```bash

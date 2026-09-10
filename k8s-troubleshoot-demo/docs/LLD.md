@@ -3,10 +3,21 @@
 | Field | Value |
 | --- | --- |
 | Document | LLD — K8s Troubleshooter demo |
-| Version | 1.0 |
+| Version | 1.1 |
 | Status | As-implemented (stubbed LLM) |
 | Code root | `k8s-troubleshoot-demo/` |
 | Runtime | FastAPI + uvicorn on port **8115** |
+
+### Document map
+
+| Document | Audience | Use it for |
+| --- | --- | --- |
+| **This LLD** | Implementers changing the agent | As-built modules, catalog schema, snapshot/event contract, stub→live replacement |
+| [Code-Walkthrough.md](Code-Walkthrough.md) | Engineers new to this module | Folder map, Python patterns, how a run moves through the code |
+| [Orchestrator-API.md](Orchestrator-API.md) | External orchestrator teams | HTTP contract: `/execute`, `/status`, `/history`, UI join. **Do not import Python from this repo.** |
+| [In-House-Orchestrator.md](In-House-Orchestrator.md) | Engineers tracing `GET /orch` | JS functions, APIs called, multi-run isolation, status polling |
+| [User-Guide.md](User-Guide.md) | Testers | Scenario prompts, poll timing, checklists |
+| [api.md](../api.md) | Multi-domain envelope | Shared 202 / status / history JSON shape (examples use `"agent": "RAN"`; this app sets `"K8s"`) |
 
 ---
 
@@ -21,8 +32,9 @@ The demo exists to:
 1. Replay known troubleshooting sessions with realistic timing.
 2. Drive the Troubleshooter UI (workflow graph, topology, iteration cards, session summary).
 3. Expose a snapshot/SSE API so a custom UI can consume the same timeline.
+4. Expose an orchestrator contract (`POST /execute`, `GET /status`, `GET /history`) so a parent mission controller can start, poll, and open this agent like any other domain worker.
 
-This LLD is the contract for replacing those stubs with a real LLM + kubectl executor later, without changing the UI event model.
+This LLD is the contract for replacing those stubs with a real LLM + kubectl executor later, without changing the UI event model **or** the orchestrator HTTP envelope. Request/response field lists for an external orchestrator live in [Orchestrator-API.md](Orchestrator-API.md); this LLD describes how those routes are implemented.
 
 ---
 
@@ -35,6 +47,7 @@ This LLD is the contract for replacing those stubs with a real LLM + kubectl exe
 - Timed replay of workflow / topology / iteration snapshots.
 - In-memory run store and SSE fan-out.
 - Catalog session schema (including LLM stub fields).
+- Orchestrator HTTP envelope: `POST /execute` (202), `GET /status`, `GET /history` — implemented here, specified in [Orchestrator-API.md](Orchestrator-API.md).
 
 ### Out of scope (explicitly not implemented)
 
@@ -47,24 +60,27 @@ This LLD is the contract for replacing those stubs with a real LLM + kubectl exe
 | HITL / Creation mode apply | Mentioned only in `final.creationHint` |
 | Persistence | In-memory `RunStore`; lost on process restart |
 | AuthN / AuthZ | None; CORS default `*` |
+| Cancel / pause / resume | No API; orchestrator can only start, poll, and open the UI |
 
 ---
 
 ## 3. System context
 
 ```
-                    ┌─────────────────────────────────────────┐
-                    │         k8s-troubleshoot-demo           │
-  Browser ─────────►│  GET /  → static HTML (client replay)   │
-  curl / custom UI─►│  POST /v1/runs → server replay + SSE    │
-                    │                                         │
-                    │  Catalog: static/k8s-demo-sessions.json │
-                    │  (stubbed LLM + kubectl + topology)     │
-                    └─────────────────────────────────────────┘
+ External orchestrator          k8s-troubleshoot-demo (:8115)
+  POST /execute ──────────────►│  match catalog, create Run (ACCEPTED)
+  GET  /status  ◄──────────────│  poll ACCEPTED → RUNNING → COMPLETED|FAILED
+  GET  /history ◄──────────────│  30-minute in-memory list
+  open /?run_id= ─────────────►│  Troubleshooter joins current snapshot + SSE
+
+ Browser (standalone) ────────►│  GET /  → HTML (client-side replay)
+ curl / custom UI ────────────►│  POST /v1/runs → server replay + SSE (not for orchestrators)
+
+ Catalog: static/k8s-demo-sessions.json  (stubbed LLM + kubectl + topology)
          No TCAP portal, no agent-runtime-service, no cluster
 ```
 
-Two consumers share the same catalog. The isolated UI can still replay locally. When opened with `/?run_id=`, it joins the **server** timeline at the current snapshot.
+Four consumers share the same catalog. The isolated UI can still replay locally. When opened with `/?run_id=`, it joins the **server** timeline at the current snapshot. An external orchestrator must use `/execute` + `/status` only — see [Orchestrator-API.md](Orchestrator-API.md).
 
 | Path | Entry | Matcher | Timeline | Timing |
 | --- | --- | --- | --- | --- |
@@ -87,7 +103,15 @@ k8s-troubleshoot-demo/
 ├── static/
 │   ├── k8s-demo-sessions.json       # stub catalog (source of truth)
 │   ├── k8s-troubleshoot-replay.html # isolated UI
+│   ├── k8s-orchestrator.html        # toy orchestrator (execute + poll + history)
 │   └── k8s-troubleshoot.css         # tokenized component CSS
+├── docs/
+│   ├── LLD.md                       # this file
+│   ├── Code-Walkthrough.md          # newcomer path through the code
+│   ├── Orchestrator-API.md          # external orchestrator HTTP contract
+│   ├── In-House-Orchestrator.md     # GET /orch trigger, poll, history
+│   └── User-Guide.md                # tester checklist
+├── api.md                           # shared execute/status/history envelope
 ├── tests/test_replay_api.py
 └── run-prompt.sh                    # CLI client of /v1/runs
 ```
@@ -136,7 +160,20 @@ Key exports:
 
 `RunStore` keeps runs for `ttl_sec` (default 1800) measured from `created`. Lazy `prune()` on create/get/list drops terminal `COMPLETED`/`FAILED` runs past that window. `ACCEPTED`/`RUNNING` are never dropped. `list_history()` returns remaining runs newest-first. `expires_at` on API payloads is `created + ttl_sec`.
 
-### 4.4 Static UI
+### 4.4 `app/orch_status.py` — orchestrator DTOs
+
+Pure mapping from `Run` + latest snapshot → the JSON an external orchestrator binds in its UI. Does not emit events or match catalog.
+
+| Function | Role |
+| --- | --- |
+| `build_status` | `GET /status` and `GET /history/{run_id}` payload (`mission`, `progress`, `sub_agents`, `details.ui_url`, `expires_at`) |
+| `build_history_list` / `build_history_item` | `GET /history` rows (newest first) |
+| `execute_ack` | 202 body: `{ run_id, current_status, agent: "K8s", message }` |
+| `progress_for` | Demo bar 0–100 from workflow nodes / iteration (not wall-clock remaining) |
+
+`sub_agents` keys are display names: Analyze Intent, Gather Context, Generate Hypothesis, Validate Hypothesis, Report Generation. Node `pending`/`running`/`done` maps to `QUEUED`/`RUNNING`/`COMPLETED`. Field-level contract: [Orchestrator-API.md](Orchestrator-API.md).
+
+### 4.5 Static UI
 
 Single-file HTML. Standalone mode: same scoring, step list, delays, and band-reveal logic as Python. Orchestrator join mode (`/?run_id=`): fetch buffered snapshots, `applySnapshot` each (no timed replay from the start), then `EventSource` for the remainder. Intent controls stay disabled while attached to an orchestrator run.
 
@@ -432,6 +469,16 @@ Node `status`: `pending` | `running` | `done`.
 
 Base URL: `http://<host>:8115`
 
+**Split of concerns**
+
+| Consumer | Routes | Spec |
+| --- | --- | --- |
+| External orchestrator | `POST /execute`, `GET /status`, `GET /history`, `GET /history/{run_id}`, `GET /?run_id=`, `GET /health` | **[Orchestrator-API.md](Orchestrator-API.md)** — request/response fields, errors, client sketch |
+| Demo / CLI / custom Troubleshooter | `POST /v1/runs`, `GET /v1/runs/{id}`, `/events`, `/stream`, `GET /v1/catalog` | This section (10.1–10.2) |
+| Operators / testers | `GET /`, `GET /orch` | [User-Guide.md](User-Guide.md) |
+
+Orchestrators must **not** call `POST /v1/runs` (server-generated `run_id`, unmatched prompt → 422 instead of 202 then `FAILED`).
+
 | Method | Path | Behavior |
 | --- | --- | --- |
 | `GET` | `/health` | `{ "status": "ok" }` |
@@ -495,7 +542,9 @@ run.finished → COMPLETED
 run.error / catalog miss → FAILED (poll HTTP 200)
 ```
 
-No cancel / pause API.
+No cancel / pause API. Do not mix the two `status` vocabularies: orchestrators poll `orch_status` (`ACCEPTED` / `RUNNING` / `COMPLETED` / `FAILED`) via `/status`. The demo API reports `run.status` (`accepted` / `running` / `finished` / `error`) on `/v1/runs/{id}`.
+
+Wire-level field lists, idempotency, and a Python client sketch: [Orchestrator-API.md](Orchestrator-API.md).
 
 ---
 
@@ -539,6 +588,8 @@ Client                 main.start_run           RunStore           emit_run
 ```
 
 ### 11.3 Orchestrator execute / poll / UI join
+
+The parent orchestrator owns `run_id`. Integration details (registry, poll interval, UI URL, HTTP errors): [Orchestrator-API.md](Orchestrator-API.md). Toy implementation in-repo: `GET /orch` → `static/k8s-orchestrator.html` — function and API trace: [In-House-Orchestrator.md](In-House-Orchestrator.md).
 
 ```
 Orchestrator              POST /execute              RunStore
@@ -679,9 +730,18 @@ Until those exist, **the agent application is a deterministic catalog player** w
 | `app/main.py` | Routes, CORS, `emit_run`, SSE generator |
 | `app/replay.py` | Match, steps, delays, snapshots |
 | `app/store.py` | `Run`, seq, status, 30-minute history TTL, subscriber fan-out |
+| `app/orch_status.py` | Orchestrator DTOs: `build_status`, `execute_ack`, history rows, `progress_for` |
 | `static/k8s-orchestrator.html` | Scenario cards + recent-runs panel (`GET /history`) |
 | `static/k8s-demo-sessions.json` | All stubbed LLM / kubectl / topology content |
 | `static/k8s-troubleshoot-replay.html` | Client-side matcher, player, renderer |
 | `static/k8s-troubleshoot.css` | Layout + tokens |
 | `run-prompt.sh` | Timed CLI consumer of the replay API |
 | `tests/test_replay_api.py` | API + asset contract tests |
+| `docs/LLD.md` | As-built design (this file) |
+| `docs/Code-Walkthrough.md` | Newcomer walkthrough of the code |
+| `docs/Orchestrator-API.md` | External orchestrator HTTP contract |
+| `docs/In-House-Orchestrator.md` | `/orch` JS functions, APIs, multi-run polling |
+| `docs/User-Guide.md` | Tester / wiring checklist |
+| `api.md` | Shared execute/status/history envelope |
+
+Related: [Code walkthrough](Code-Walkthrough.md) · [Orchestrator API](Orchestrator-API.md) · [In-house orchestrator](In-House-Orchestrator.md) · [User guide](User-Guide.md) · [api.md](../api.md) · [README](../README.md)
