@@ -1,6 +1,18 @@
-fastapi>=0.110
-uvicorn[standard]>=0.27
-sse-starlette>=2.0
-pydantic>=2
-httpx>=0.27
+# Pinned to the parent orchestrator runtime (FastAPI 0.111 / Starlette 0.37).
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+starlette==0.37.2
+jinja2==3.1.4
+python-multipart==0.0.9
+pydantic-settings==2.3.4
+aiofiles==23.2.1
+python-docx==1.1.2
+websockets==12.0
+reportlab==4.2.2
+Pillow==10.4.0
+# sse-starlette==3.4.11 cannot be installed with FastAPI 0.111.0
+# (it requires starlette>=0.49.1; FastAPI 0.111 needs starlette<0.38).
+# SSE is implemented with Starlette StreamingResponse in app/main.py.
+
+# Tests (httpx is already pulled in by FastAPI 0.111)
 pytest>=8

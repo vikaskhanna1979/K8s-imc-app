@@ -6,15 +6,15 @@ import asyncio
 import json
 import os
 import random
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from sse_starlette.sse import EventSourceResponse
 
 from app.orch_status import build_history_list, build_status, execute_ack
 from app.replay import catalog_summaries, match_session, timeline_events
@@ -44,6 +44,27 @@ def _cors_origins() -> list[str]:
     if raw == "*":
         return ["*"]
     return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+# Starlette 0.37 StreamingResponse SSE (FastAPI 0.111). sse-starlette 3.4.11
+# requires starlette>=0.49.1 and cannot be installed with this stack.
+SSE_HEADERS = {
+    "Cache-Control": "no-cache, no-store",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
+
+
+def _sse_pack(event: str, data: str) -> str:
+    return f"event: {event}\ndata: {data}\n\n"
+
+
+def _sse_response(content: AsyncIterator[str]) -> StreamingResponse:
+    return StreamingResponse(
+        content,
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+    )
 
 
 @asynccontextmanager
@@ -248,7 +269,7 @@ def get_events(run_id: str, after_seq: int = Query(default=0, ge=0)) -> dict[str
 
 
 @app.get("/v1/runs/{run_id}/stream")
-async def stream_run(run_id: str, after_seq: int = Query(default=0, ge=0)) -> EventSourceResponse:
+async def stream_run(run_id: str, after_seq: int = Query(default=0, ge=0)) -> StreamingResponse:
     run = store.get(run_id)
     if not run:
         raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
@@ -260,7 +281,7 @@ async def stream_run(run_id: str, after_seq: int = Query(default=0, ge=0)) -> Ev
             if seq <= last:
                 continue
             last = seq
-            yield {"event": "message", "data": json.dumps(event)}
+            yield _sse_pack("message", json.dumps(event))
             if event.get("type") in ("run.finished", "run.error"):
                 return
         if run.status in ("finished", "error"):
@@ -272,15 +293,15 @@ async def stream_run(run_id: str, after_seq: int = Query(default=0, ge=0)) -> Ev
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=15.0)
                 except asyncio.TimeoutError:
-                    yield {"event": "ping", "data": ""}
+                    yield ": ping\n\n"
                     continue
-                yield {"event": "message", "data": json.dumps(event)}
+                yield _sse_pack("message", json.dumps(event))
                 if event.get("type") in ("run.finished", "run.error"):
                     return
         finally:
             run.subscribers.discard(queue)
 
-    return EventSourceResponse(gen())
+    return _sse_response(gen())
 
 
 if __name__ == "__main__":
